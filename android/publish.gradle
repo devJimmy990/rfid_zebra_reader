@@ -1,0 +1,18 @@
+apply plugin: 'maven-publish'
+
+publishing {
+    publications {
+        aar(MavenPublication) {
+            groupId = 'com.zebra.rfid'
+            artifactId = 'rfid-api3'
+            version = '2.0.5.238'
+            artifact("$projectDir/libs/RFIDAPI3Library.aar")
+        }
+    }
+
+    repositories {
+        maven {
+            url = uri("$projectDir/maven")
+        }
+    }
+}
