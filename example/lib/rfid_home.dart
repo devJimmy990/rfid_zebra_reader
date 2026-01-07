@@ -3,8 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:zebra_rfid_reader/zebra_rfid_reader.dart';
-
-import 'permission_helper.dart';
+import 'package:zebra_rfid_reader_example/permission_helper.dart';
 
 class RfidReaderPage extends StatefulWidget {
   const RfidReaderPage({super.key});
@@ -81,7 +80,7 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
         case RfidEventType.tagRead:
           final tags = event.tags;
           if (tags != null) {
-            for (var tag in tags) {
+            for (final tag in tags) {
               if (!_uniqueTagIds.contains(tag.tagId)) {
                 _uniqueTagIds.add(tag.tagId);
                 _scannedTags.insert(0, tag);
@@ -240,277 +239,272 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Zebra RFID Reader - TC27'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.delete_sweep),
-            onPressed: _clearTags,
-            tooltip: 'Clear tags',
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () => openAppSettings(),
-            tooltip: 'App settings',
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          // Permission Warning Banner
-          if (!_permissionsGranted)
-            Container(
-              color: Colors.red,
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              child: Row(
-                children: [
-                  const Icon(Icons.warning, color: Colors.white),
-                  const SizedBox(width: 8),
-                  const Expanded(
-                    child: Text(
-                      'Permissions required',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  ElevatedButton(
-                    onPressed: _checkAndRequestPermissions,
-                    child: const Text('Grant'),
-                  ),
-                ],
-              ),
-            ),
-
-          // Status Card
-          Card(
-            margin: const EdgeInsets.all(16),
-            color: _isConnected ? Colors.green[50] : Colors.grey[200],
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      Icon(
-                        _isConnected ? Icons.check_circle : Icons.bluetooth,
-                        color: _isConnected ? Colors.green : Colors.grey,
-                        size: 32,
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              _status,
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'Tags: ${_uniqueTagIds.length} | Scanning: ${_isScanning ? "Yes" : "No"}',
-                              style: const TextStyle(
-                                fontSize: 14,
-                                color: Colors.grey,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          // Control Buttons
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: const Text('Zebra RFID Reader - TC27'),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.delete_sweep),
+          onPressed: _clearTags,
+          tooltip: 'Clear tags',
+        ),
+        IconButton(
+          icon: const Icon(Icons.settings),
+          onPressed: () => openAppSettings(),
+          tooltip: 'App settings',
+        ),
+      ],
+    ),
+    body: Column(
+      children: [
+        // Permission Warning Banner
+        if (!_permissionsGranted)
+          Container(
+            color: Colors.red,
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
             child: Row(
               children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: (_permissionsGranted && !_isConnected)
-                        ? _connect
-                        : null,
-                    icon: const Icon(Icons.bluetooth_connected),
-                    label: const Text('Connect'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.all(16),
+                const Icon(Icons.warning, color: Colors.white),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'Permissions required',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: _isConnected ? _disconnect : null,
-                    icon: const Icon(Icons.bluetooth_disabled),
-                    label: const Text('Disconnect'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.all(16),
-                    ),
-                  ),
+                ElevatedButton(
+                  onPressed: _checkAndRequestPermissions,
+                  child: const Text('Grant'),
                 ),
               ],
             ),
           ),
 
-          const SizedBox(height: 8),
-
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: (_isConnected && !_isScanning)
-                        ? _startScanning
-                        : null,
-                    icon: const Icon(Icons.play_arrow),
-                    label: const Text('Start'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.all(16),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: (_isConnected && _isScanning)
-                        ? _stopScanning
-                        : null,
-                    icon: const Icon(Icons.stop),
-                    label: const Text('Stop'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.all(16),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          // Power Control
-          Padding(
+        // Status Card
+        Card(
+          margin: const EdgeInsets.all(16),
+          color: _isConnected ? Colors.green[50] : Colors.grey[200],
+          child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Antenna Power: $_powerLevel',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-                Slider(
-                  value: _powerLevel.toDouble(),
-                  min: 100,
-                  max: 270,
-                  divisions: 17,
-                  label: _powerLevel.toString(),
-                  onChanged: _isConnected
-                      ? (value) {
-                          setState(() {
-                            _powerLevel = value.toInt();
-                          });
-                        }
-                      : null,
-                  onChangeEnd: _isConnected
-                      ? (value) => _setPower(value.toInt())
-                      : null,
-                ),
-              ],
-            ),
-          ),
-
-          const Divider(),
-
-          // Tags Header
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(
-              children: [
-                const Text(
-                  'Scanned Tags',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                const Spacer(),
-                Text(
-                  '${_uniqueTagIds.length} unique',
-                  style: const TextStyle(color: Colors.grey),
-                ),
-              ],
-            ),
-          ),
-
-          // Tags List
-          Expanded(
-            child: _scannedTags.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.nfc, size: 64, color: Colors.grey[400]),
-                        const SizedBox(height: 16),
-                        Text(
-                          _isConnected
-                              ? 'Press "Start" to scan tags'
-                              : 'Connect to reader first',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                      ],
+                Row(
+                  children: [
+                    Icon(
+                      _isConnected ? Icons.check_circle : Icons.bluetooth,
+                      color: _isConnected ? Colors.green : Colors.grey,
+                      size: 32,
                     ),
-                  )
-                : ListView.builder(
-                    itemCount: _scannedTags.length,
-                    itemBuilder: (context, index) {
-                      final tag = _scannedTags[index];
-                      return Card(
-                        margin: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 4,
-                        ),
-                        child: ListTile(
-                          leading: CircleAvatar(
-                            backgroundColor: Colors.blue,
-                            child: Text(
-                              '${index + 1}',
-                              style: const TextStyle(color: Colors.white),
-                            ),
-                          ),
-                          title: Text(
-                            tag.tagId,
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _status,
                             style: const TextStyle(
-                              fontFamily: 'monospace',
-                              fontSize: 12,
+                              fontSize: 16,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                          subtitle: Text(
-                            'RSSI: ${tag.rssi} dBm | Antenna: ${tag.antennaId} | Reads: ${tag.count}',
-                            style: const TextStyle(fontSize: 11),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Tags: ${_uniqueTagIds.length} | Scanning: ${_isScanning ? "Yes" : "No"}',
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.grey,
+                            ),
                           ),
-                          trailing: Icon(Icons.nfc, color: Colors.blue[300]),
-                        ),
-                      );
-                    },
-                  ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
-        ],
-      ),
-    );
-  }
+        ),
+
+        // Control Buttons
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: (_permissionsGranted && !_isConnected)
+                      ? _connect
+                      : null,
+                  icon: const Icon(Icons.bluetooth_connected),
+                  label: const Text('Connect'),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.all(16),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _isConnected ? _disconnect : null,
+                  icon: const Icon(Icons.bluetooth_disabled),
+                  label: const Text('Disconnect'),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.all(16),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 8),
+
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: (_isConnected && !_isScanning)
+                      ? _startScanning
+                      : null,
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text('Start'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.all(16),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: (_isConnected && _isScanning)
+                      ? _stopScanning
+                      : null,
+                  icon: const Icon(Icons.stop),
+                  label: const Text('Stop'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.all(16),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // Power Control
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Antenna Power: $_powerLevel',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              Slider(
+                value: _powerLevel.toDouble(),
+                min: 100,
+                max: 270,
+                divisions: 17,
+                label: _powerLevel.toString(),
+                onChanged: _isConnected
+                    ? (value) {
+                        setState(() {
+                          _powerLevel = value.toInt();
+                        });
+                      }
+                    : null,
+                onChangeEnd: _isConnected
+                    ? (value) => _setPower(value.toInt())
+                    : null,
+              ),
+            ],
+          ),
+        ),
+
+        const Divider(),
+
+        // Tags Header
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              const Text(
+                'Scanned Tags',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const Spacer(),
+              Text(
+                '${_uniqueTagIds.length} unique',
+                style: const TextStyle(color: Colors.grey),
+              ),
+            ],
+          ),
+        ),
+
+        // Tags List
+        Expanded(
+          child: _scannedTags.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.nfc, size: 64, color: Colors.grey[400]),
+                      const SizedBox(height: 16),
+                      Text(
+                        _isConnected
+                            ? 'Press "Start" to scan tags'
+                            : 'Connect to reader first',
+                        style: TextStyle(fontSize: 16, color: Colors.grey[600]),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  itemCount: _scannedTags.length,
+                  itemBuilder: (context, index) {
+                    final tag = _scannedTags[index];
+                    return Card(
+                      margin: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 4,
+                      ),
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: Colors.blue,
+                          child: Text(
+                            '${index + 1}',
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                        ),
+                        title: Text(
+                          tag.tagId,
+                          style: const TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        subtitle: Text(
+                          'RSSI: ${tag.rssi} dBm | Antenna: ${tag.antennaId} | Reads: ${tag.count}',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        trailing: Icon(Icons.nfc, color: Colors.blue[300]),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    ),
+  );
 }

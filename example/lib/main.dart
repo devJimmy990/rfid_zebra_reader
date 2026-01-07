@@ -9,11 +9,9 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Zebra RFID Reader',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: const RfidReaderPage(),
-    );
-  }
+  Widget build(BuildContext context) => MaterialApp(
+    title: 'Zebra RFID Reader',
+    theme: ThemeData(primarySwatch: Colors.blue),
+    home: const RfidReaderPage(),
+  );
 }

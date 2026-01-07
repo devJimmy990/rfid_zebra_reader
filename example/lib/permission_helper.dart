@@ -5,7 +5,7 @@ class PermissionHelper {
   /// Request all permissions needed for RFID reader
   static Future<bool> requestRfidPermissions(BuildContext context) async {
     // List of permissions to request
-    Map<Permission, PermissionStatus> statuses = await [
+    final Map<Permission, PermissionStatus> statuses = await [
       Permission.bluetooth,
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
@@ -13,7 +13,7 @@ class PermissionHelper {
     ].request();
 
     // Check if all permissions granted
-    bool allGranted = statuses.values.every((status) => status.isGranted);
+    final bool allGranted = statuses.values.every((status) => status.isGranted);
 
     if (!allGranted) {
       // Show dialog if permissions denied
@@ -28,10 +28,11 @@ class PermissionHelper {
 
   /// Check if permissions are already granted
   static Future<bool> checkRfidPermissions() async {
-    bool bluetoothGranted = await Permission.bluetooth.isGranted;
-    bool bluetoothScanGranted = await Permission.bluetoothScan.isGranted;
-    bool bluetoothConnectGranted = await Permission.bluetoothConnect.isGranted;
-    bool locationGranted = await Permission.location.isGranted;
+    final bool bluetoothGranted = await Permission.bluetooth.isGranted;
+    final bool bluetoothScanGranted = await Permission.bluetoothScan.isGranted;
+    final bool bluetoothConnectGranted =
+        await Permission.bluetoothConnect.isGranted;
+    final bool locationGranted = await Permission.location.isGranted;
 
     return bluetoothGranted &&
         bluetoothScanGranted &&
@@ -44,63 +45,61 @@ class PermissionHelper {
     BuildContext context,
     Map<Permission, PermissionStatus> statuses,
   ) async {
-    List<String> deniedPermissions = [];
+    final List<String> deniedPermissions = [];
 
     statuses.forEach((permission, status) {
       if (!status.isGranted) {
-        String name = permission.toString().split('.').last;
+        final String name = permission.toString().split('.').last;
         deniedPermissions.add(name);
       }
     });
 
     await showDialog(
       context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Permissions Required'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'The following permissions are required to use the RFID reader:',
-              ),
-              const SizedBox(height: 10),
-              ...deniedPermissions.map((perm) => Text('• $perm')),
-              const SizedBox(height: 10),
-              const Text(
-                'Please grant these permissions in the app settings.',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
+      builder: (context) => AlertDialog(
+        title: const Text('Permissions Required'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'The following permissions are required to use the RFID reader:',
             ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.pop(context);
-                openAppSettings();
-              },
-              child: const Text('Open Settings'),
+            const SizedBox(height: 10),
+            ...deniedPermissions.map((perm) => Text('• $perm')),
+            const SizedBox(height: 10),
+            const Text(
+              'Please grant these permissions in the app settings.',
+              style: TextStyle(fontWeight: FontWeight.bold),
             ),
           ],
-        );
-      },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              openAppSettings();
+            },
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
     );
   }
 
   /// Request location permission specifically
   static Future<bool> requestLocationPermission() async {
-    var status = await Permission.location.request();
+    final status = await Permission.location.request();
     return status.isGranted;
   }
 
   /// Request Bluetooth permissions specifically
   static Future<bool> requestBluetoothPermissions() async {
-    Map<Permission, PermissionStatus> statuses = await [
+    final Map<Permission, PermissionStatus> statuses = await [
       Permission.bluetooth,
       Permission.bluetoothScan,
       Permission.bluetoothConnect,

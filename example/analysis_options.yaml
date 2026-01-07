@@ -1,28 +1,40 @@
-# This file configures the analyzer, which statically analyzes Dart code to
-# check for errors, warnings, and lints.
-#
-# The issues identified by the analyzer are surfaced in the UI of Dart-enabled
-# IDEs (https://dart.dev/tools#ides-and-editors). The analyzer can also be
-# invoked from the command line by running `flutter analyze`.
-
-# The following line activates a set of recommended lints for Flutter apps,
-# packages, and plugins designed to encourage good coding practices.
 include: package:flutter_lints/flutter.yaml
 
 linter:
-  # The lint rules applied to this project can be customized in the
-  # section below to disable rules from the `package:flutter_lints/flutter.yaml`
-  # included above or to enable additional rules. A list of all available lints
-  # and their documentation is published at https://dart.dev/lints.
-  #
-  # Instead of disabling a lint rule for the entire project in the
-  # section below, it can also be suppressed for a single line of code
-  # or a specific dart file by using the `// ignore: name_of_lint` and
-  # `// ignore_for_file: name_of_lint` syntax on the line or in the file
-  # producing the lint.
   rules:
-    # avoid_print: false  # Uncomment to disable the `avoid_print` rule
-    # prefer_single_quotes: true  # Uncomment to enable the `prefer_single_quotes` rule
+    # Style and Best Practices
+    - prefer_final_fields
+    - prefer_final_locals 
+    - prefer_const_constructors
+    - prefer_const_literals_to_create_immutables
+    - prefer_const_declarations
+    - prefer_expression_function_bodies
+    - always_put_required_named_parameters_first
+    - use_key_in_widget_constructors
+    - unnecessary_this
+    - always_use_package_imports
+    - depend_on_referenced_packages
+    - annotate_overrides
+    - avoid_init_to_null
+    - avoid_unnecessary_containers
+    - avoid_redundant_argument_values
+    - avoid_returning_null
+    - avoid_types_on_closure_parameters
+    - use_setters_to_change_properties
+    - prefer_typing_uninitialized_variables
+    - sort_constructors_first
+    - sort_unnamed_constructors_first
+    - type_annotate_public_apis
+    - unnecessary_late
 
-# Additional information about this file can be found at
-# https://dart.dev/guides/language/analysis-options
+    # Flutter-specific
+    - prefer_const_constructors_in_immutables
+    - use_rethrow_when_possible
+
+    # BLoC/Cubit Recommended
+    - avoid_print                            
+    - avoid_dynamic_calls                    
+    - avoid_positional_boolean_parameters    
+    - avoid_void_async                       
+    - prefer_final_in_for_each               
+
