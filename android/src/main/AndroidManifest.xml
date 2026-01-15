@@ -2,20 +2,31 @@
     xmlns:tools="http://schemas.android.com/tools"
     package="dev.jimmy.rfid_zebra_reader">
     
-    <!-- Bluetooth permissions for RFID reader connection -->
-    <uses-permission android:name="android.permission.BLUETOOTH" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <!-- BLUETOOTH PERMISSIONS -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" tools:targetApi="s" />
     
-    <!-- Location required for Bluetooth scanning on Android -->
+    
+    <!-- LOCATION PERMISSIONS (Required for Bluetooth scanning) -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" tools:targetApi="q" />
     
-    <!-- For USB connection (if needed) -->
+    
+    <!-- USB PERMISSION (Optional - for USB RFID readers) -->
     <uses-permission android:name="android.permission.USB_PERMISSION" />
     
     
-    <!-- Empty application tag to prevent conflicts -->
+    <!-- FEATURES -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+    
+    
     <application tools:node="merge" />
 </manifest>
