@@ -31,7 +31,7 @@ android {
 
     defaultConfig {
         applicationId = "dev.jimmy.rfid_zebra_reader_example"
-        minSdk = 24
+        minSdk = 26
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

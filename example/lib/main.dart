@@ -1,118 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:rfid_zebra_reader/rfid_zebra_reader.dart';
 
 void main() => runApp(const MaterialApp(home: RfidReaderPage()));
-
-class PermissionHelper {
-  /// Request all permissions needed for RFID reader
-  static Future<bool> requestRfidPermissions(BuildContext context) async {
-    // List of permissions to request
-    final Map<Permission, PermissionStatus> statuses = await [
-      Permission.bluetooth,
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-      Permission.location,
-    ].request();
-
-    // Check if all permissions granted
-    final bool allGranted = statuses.values.every((status) => status.isGranted);
-
-    if (!allGranted) {
-      // Show dialog if permissions denied
-      if (context.mounted) {
-        await _showPermissionDeniedDialog(context, statuses);
-      }
-      return false;
-    }
-
-    return true;
-  }
-
-  /// Check if permissions are already granted
-  static Future<bool> checkRfidPermissions() async {
-    final bool bluetoothGranted = await Permission.bluetooth.isGranted;
-    final bool bluetoothScanGranted = await Permission.bluetoothScan.isGranted;
-    final bool bluetoothConnectGranted =
-        await Permission.bluetoothConnect.isGranted;
-    final bool locationGranted = await Permission.location.isGranted;
-
-    return bluetoothGranted &&
-        bluetoothScanGranted &&
-        bluetoothConnectGranted &&
-        locationGranted;
-  }
-
-  /// Show dialog when permissions are denied
-  static Future<void> _showPermissionDeniedDialog(
-    BuildContext context,
-    Map<Permission, PermissionStatus> statuses,
-  ) async {
-    final List<String> deniedPermissions = [];
-
-    statuses.forEach((permission, status) {
-      if (!status.isGranted) {
-        final String name = permission.toString().split('.').last;
-        deniedPermissions.add(name);
-      }
-    });
-
-    await showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Permissions Required'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'The following permissions are required to use the RFID reader:',
-            ),
-            const SizedBox(height: 10),
-            ...deniedPermissions.map((perm) => Text('• $perm')),
-            const SizedBox(height: 10),
-            const Text(
-              'Please grant these permissions in the app settings.',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              openAppSettings();
-            },
-            child: const Text('Open Settings'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Request location permission specifically
-  static Future<bool> requestLocationPermission() async {
-    final status = await Permission.location.request();
-    return status.isGranted;
-  }
-
-  /// Request Bluetooth permissions specifically
-  static Future<bool> requestBluetoothPermissions() async {
-    final Map<Permission, PermissionStatus> statuses = await [
-      Permission.bluetooth,
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-    ].request();
-
-    return statuses.values.every((status) => status.isGranted);
-  }
-}
 
 class RfidReaderPage extends StatefulWidget {
   const RfidReaderPage({super.key});
@@ -122,208 +13,158 @@ class RfidReaderPage extends StatefulWidget {
 }
 
 class _RfidReaderPageState extends State<RfidReaderPage> {
-  String _status = 'Disconnected';
+  // Status
+  RfidStatus _status = RfidStatus(
+    permissionsGranted: false,
+    sdkInitialized: false,
+    readerConnected: false,
+  );
+
+  bool _isInitializing = false;
   bool _isScanning = false;
-  bool _isConnected = false;
-  bool _permissionsGranted = false;
+
+  // Tags
   final List<RfidTag> _scannedTags = [];
   final Set<String> _uniqueTagIds = {};
-  StreamSubscription<RfidEvent>? _eventSubscription;
+
+  // Power
   int _powerLevel = 270;
+  int _maxPower = 270;
+
+  // Event subscription
+  StreamSubscription<RfidEvent>? _eventSubscription;
 
   @override
   void initState() {
     super.initState();
-    _checkAndRequestPermissions();
+    _setupEventListener();
+    _initialize();
   }
 
-  // Check and request permissions on app start
-  Future<void> _checkAndRequestPermissions() async {
-    bool granted = await PermissionHelper.checkRfidPermissions();
-
-    if (!granted) {
-      // Request permissions
-      granted = await PermissionHelper.requestRfidPermissions(context);
-    }
-
-    setState(() {
-      _permissionsGranted = granted;
-      if (granted) {
-        _status = 'Ready - Permissions granted';
-        _initializeReader();
-      } else {
-        _status = 'Permissions denied - Cannot use RFID reader';
-      }
-    });
-  }
-
-  Future<void> _initializeReader() async {
-    // Listen to RFID events
+  void _setupEventListener() {
     _eventSubscription = ZebraRfidReader.eventStream.listen(
       _handleRfidEvent,
       onError: (error) {
-        setState(() {
-          _status = 'Error: $error';
-        });
+        _showSnackBar('Event error: $error');
+        AppLogger().error('Event stream error', error: error);
       },
     );
+  }
 
-    // Check connection status
-    _checkConnection();
+  Future<void> _initialize() async {
+    setState(() => _isInitializing = true);
+
+    AppLogger().info('Starting initialization...', source: 'UI');
+
+    final status = await ZebraRfidReader.initialize();
+
+    setState(() {
+      _status = status;
+      _isInitializing = false;
+      _maxPower = status.maxPower;
+      _powerLevel = status.maxPower;
+    });
+
+    if (status.hasError) {
+      _showSnackBar(status.error!);
+      AppLogger().error('Init failed: ${status.error}', source: 'UI');
+    } else if (status.isReady) {
+      _showSnackBar('Connected to ${status.readerName}');
+      AppLogger().info('Ready: ${status.readerName}', source: 'UI');
+    }
   }
 
   void _handleRfidEvent(RfidEvent event) {
-    setState(() {
-      switch (event.type) {
-        case RfidEventType.connected:
-          _isConnected = true;
-          _status = 'Connected to ${event.readerName ?? "reader"}';
-          break;
+    switch (event.type) {
+      case RfidEventType.connected:
+        setState(() {
+          _status = _status.copyWith(
+            readerConnected: true,
+            readerName: event.readerName,
+          );
+        });
+        _showSnackBar('Connected to ${event.readerName}');
+        break;
 
-        case RfidEventType.disconnected:
-          _isConnected = false;
+      case RfidEventType.disconnected:
+        setState(() {
+          _status = _status.copyWith(
+            readerConnected: false,
+            isReconnecting: false,
+          );
           _isScanning = false;
-          _status = 'Disconnected';
-          break;
+        });
+        _showSnackBar('Disconnected');
+        break;
 
-        case RfidEventType.tagRead:
-          final tags = event.tags;
-          if (tags != null) {
+      case RfidEventType.tagRead:
+        final tags = event.tags;
+        if (tags != null) {
+          setState(() {
             for (final tag in tags) {
               if (!_uniqueTagIds.contains(tag.tagId)) {
                 _uniqueTagIds.add(tag.tagId);
                 _scannedTags.insert(0, tag);
               }
             }
-          }
-          break;
+          });
+        }
+        break;
 
-        case RfidEventType.trigger:
-          final pressed = event.triggerPressed ?? false;
-          if (pressed) {
-            _status = 'Trigger pressed - Scanning...';
-            _startScanning();
-          } else {
-            _status = 'Trigger released';
-            _stopScanning();
-          }
-          break;
+      case RfidEventType.trigger:
+        final pressed = event.triggerPressed ?? false;
+        if (pressed && _status.isReady && !_isScanning) {
+          _startScanning();
+        } else if (!pressed && _isScanning) {
+          _stopScanning();
+        }
+        break;
 
-        case RfidEventType.error:
-          _status = 'Error: ${event.errorMessage}';
-          break;
+      case RfidEventType.error:
+        _showSnackBar('Error: ${event.errorMessage}');
+        break;
 
-        case RfidEventType.readerAppeared:
-          _status = 'Reader appeared: ${event.readerName}';
-          _showSnackBar('Reader detected: ${event.readerName}');
-          break;
+      case RfidEventType.readerAppeared:
+        _showSnackBar('Reader detected: ${event.readerName}');
+        break;
 
-        case RfidEventType.readerDisappeared:
-          _status = 'Reader disappeared: ${event.readerName}';
-          _showSnackBar('Reader disconnected');
-          break;
+      case RfidEventType.readerDisappeared:
+        _showSnackBar('Reader removed');
+        break;
 
-        default:
-          break;
-      }
-    });
-  }
-
-  Future<void> _checkConnection() async {
-    try {
-      final isConnected = await ZebraRfidReader.isConnected();
-      setState(() {
-        _isConnected = isConnected;
-        _status = isConnected ? 'Connected' : 'Ready to connect';
-      });
-    } catch (e) {
-      setState(() {
-        _status = 'Error checking connection: $e';
-      });
-    }
-  }
-
-  Future<void> _connect() async {
-    if (!_permissionsGranted) {
-      _showSnackBar('Please grant permissions first');
-      await _checkAndRequestPermissions();
-      return;
-    }
-
-    try {
-      setState(() {
-        _status = 'Connecting...';
-      });
-      final result = await ZebraRfidReader.connect();
-      setState(() {
-        _status = result;
-      });
-      _checkConnection();
-    } catch (e) {
-      setState(() {
-        _status = 'Connection error: $e';
-      });
-    }
-  }
-
-  Future<void> _disconnect() async {
-    try {
-      await ZebraRfidReader.disconnect();
-      setState(() {
-        _isConnected = false;
-        _isScanning = false;
-        _status = 'Disconnected';
-      });
-    } catch (e) {
-      setState(() {
-        _status = 'Disconnect error: $e';
-      });
+      default:
+        break;
     }
   }
 
   Future<void> _startScanning() async {
-    if (!_isConnected) {
-      _showSnackBar('Please connect to reader first');
+    if (!_status.isReady) {
+      _showSnackBar('Reader not ready');
       return;
     }
 
-    try {
-      final result = await ZebraRfidReader.startInventory();
-      setState(() {
-        _isScanning = true;
-        _status = result;
-      });
-    } catch (e) {
-      setState(() {
-        _status = 'Start scanning error: $e';
-      });
+    final success = await ZebraRfidReader.startInventory();
+    if (success) {
+      setState(() => _isScanning = true);
+    } else {
+      _showSnackBar('Failed to start scanning');
     }
   }
 
   Future<void> _stopScanning() async {
-    try {
-      final result = await ZebraRfidReader.stopInventory();
-      setState(() {
-        _isScanning = false;
-        _status = result;
-      });
-    } catch (e) {
-      setState(() {
-        _status = 'Stop scanning error: $e';
-      });
+    final success = await ZebraRfidReader.stopInventory();
+    if (success) {
+      setState(() => _isScanning = false);
     }
   }
 
   Future<void> _setPower(int power) async {
-    try {
-      final result = await ZebraRfidReader.setAntennaPower(power);
-      setState(() {
-        _powerLevel = power;
-        _status = result;
-      });
+    final success = await ZebraRfidReader.setAntennaPower(power);
+    if (success) {
+      setState(() => _powerLevel = power);
       _showSnackBar('Power set to $power');
-    } catch (e) {
-      _showSnackBar('Error setting power: $e');
+    } else {
+      _showSnackBar('Failed to set power');
     }
   }
 
@@ -331,11 +172,11 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
     setState(() {
       _scannedTags.clear();
       _uniqueTagIds.clear();
-      _status = 'Tags cleared';
     });
   }
 
   void _showSnackBar(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
     );
@@ -350,7 +191,7 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: const Text('Zebra RFID Reader - TC27'),
+      title: const Text('Zebra RFID Reader'),
       actions: [
         IconButton(
           icon: const Icon(Icons.delete_sweep),
@@ -358,262 +199,271 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
           tooltip: 'Clear tags',
         ),
         IconButton(
-          icon: const Icon(Icons.settings),
-          onPressed: () => openAppSettings(),
-          tooltip: 'App settings',
+          icon: const Icon(Icons.article),
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const LogViewerScreen()),
+          ),
+          tooltip: 'View logs',
         ),
       ],
     ),
     body: Column(
       children: [
-        // Permission Warning Banner
-        if (!_permissionsGranted)
-          Container(
-            color: Colors.red,
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                const Icon(Icons.warning, color: Colors.white),
-                const SizedBox(width: 8),
-                const Expanded(
-                  child: Text(
-                    'Permissions required',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-                ElevatedButton(
-                  onPressed: _checkAndRequestPermissions,
-                  child: const Text('Grant'),
-                ),
-              ],
-            ),
-          ),
-
         // Status Card
-        Card(
-          margin: const EdgeInsets.all(16),
-          color: _isConnected ? Colors.green[50] : Colors.grey[200],
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      _isConnected ? Icons.check_circle : Icons.bluetooth,
-                      color: _isConnected ? Colors.green : Colors.grey,
-                      size: 32,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            _status,
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Tags: ${_uniqueTagIds.length} | Scanning: ${_isScanning ? "Yes" : "No"}',
-                            style: const TextStyle(
-                              fontSize: 14,
-                              color: Colors.grey,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
+        _buildStatusCard(),
 
         // Control Buttons
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(
-            children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: (_permissionsGranted && !_isConnected)
-                      ? _connect
-                      : null,
-                  icon: const Icon(Icons.bluetooth_connected),
-                  label: const Text('Connect'),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.all(16),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _isConnected ? _disconnect : null,
-                  icon: const Icon(Icons.bluetooth_disabled),
-                  label: const Text('Disconnect'),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.all(16),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
+        if (_status.isReady) _buildControlButtons(),
 
-        const SizedBox(height: 8),
-
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(
-            children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: (_isConnected && !_isScanning)
-                      ? _startScanning
-                      : null,
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text('Start'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.all(16),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: (_isConnected && _isScanning)
-                      ? _stopScanning
-                      : null,
-                  icon: const Icon(Icons.stop),
-                  label: const Text('Stop'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.all(16),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        // Power Control
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Antenna Power: $_powerLevel',
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              Slider(
-                value: _powerLevel.toDouble(),
-                min: 100,
-                max: 270,
-                divisions: 17,
-                label: _powerLevel.toString(),
-                onChanged: _isConnected
-                    ? (value) {
-                        setState(() {
-                          _powerLevel = value.toInt();
-                        });
-                      }
-                    : null,
-                onChangeEnd: _isConnected
-                    ? (value) => _setPower(value.toInt())
-                    : null,
-              ),
-            ],
-          ),
-        ),
+        // Power Slider
+        if (_status.isReady) _buildPowerSlider(),
 
         const Divider(),
 
         // Tags Header
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            children: [
-              const Text(
-                'Scanned Tags',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              const Spacer(),
-              Text(
-                '${_uniqueTagIds.length} unique',
-                style: const TextStyle(color: Colors.grey),
-              ),
-            ],
-          ),
-        ),
+        _buildTagsHeader(),
 
         // Tags List
-        Expanded(
-          child: _scannedTags.isEmpty
-              ? Center(
+        Expanded(child: _buildTagsList()),
+      ],
+    ),
+  );
+
+  Widget _buildStatusCard() {
+    Color statusColor;
+    IconData statusIcon;
+
+    if (_isInitializing) {
+      statusColor = Colors.orange;
+      statusIcon = Icons.hourglass_empty;
+    } else if (_status.hasError) {
+      statusColor = Colors.red;
+      statusIcon = Icons.error;
+    } else if (_status.isReconnecting) {
+      statusColor = Colors.orange;
+      statusIcon = Icons.sync;
+    } else if (_status.isReady) {
+      statusColor = Colors.green;
+      statusIcon = Icons.check_circle;
+    } else if (!_status.permissionsGranted) {
+      statusColor = Colors.red;
+      statusIcon = Icons.lock;
+    } else {
+      statusColor = Colors.grey;
+      statusIcon = Icons.bluetooth_disabled;
+    }
+
+    return Card(
+      margin: const EdgeInsets.all(16),
+      color: statusColor.withOpacity(0.1),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Icon(statusIcon, color: statusColor, size: 32),
+                const SizedBox(width: 12),
+                Expanded(
                   child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.nfc, size: 64, color: Colors.grey[400]),
-                      const SizedBox(height: 16),
                       Text(
-                        _isConnected
-                            ? 'Press "Start" to scan tags'
-                            : 'Connect to reader first',
-                        style: TextStyle(fontSize: 16, color: Colors.grey[600]),
+                        _isInitializing
+                            ? 'Initializing...'
+                            : _status.statusMessage,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Tags: ${_uniqueTagIds.length} | Scanning: ${_isScanning ? "Yes" : "No"}',
+                        style: TextStyle(fontSize: 14, color: Colors.grey[600]),
                       ),
                     ],
                   ),
-                )
-              : ListView.builder(
-                  itemCount: _scannedTags.length,
-                  itemBuilder: (context, index) {
-                    final tag = _scannedTags[index];
-                    return Card(
-                      margin: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 4,
-                      ),
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor: Colors.blue,
-                          child: Text(
-                            '${index + 1}',
-                            style: const TextStyle(color: Colors.white),
-                          ),
-                        ),
-                        title: Text(
-                          tag.tagId,
-                          style: const TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        subtitle: Text(
-                          'RSSI: ${tag.rssi} dBm | Antenna: ${tag.antennaId} | Reads: ${tag.count}',
-                          style: const TextStyle(fontSize: 11),
-                        ),
-                        trailing: Icon(Icons.nfc, color: Colors.blue[300]),
-                      ),
-                    );
-                  },
                 ),
+                if (_isInitializing)
+                  const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // Status indicators
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildStatusIndicator(
+                  'Permissions',
+                  _status.permissionsGranted,
+                ),
+                _buildStatusIndicator('SDK', _status.sdkInitialized),
+                _buildStatusIndicator('Connected', _status.readerConnected),
+              ],
+            ),
+            // Retry button if error
+            if (_status.hasError && !_isInitializing)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: ElevatedButton.icon(
+                  onPressed: _initialize,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Retry'),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatusIndicator(String label, bool active) => Column(
+    children: [
+      Icon(
+        active ? Icons.check_circle : Icons.cancel,
+        color: active ? Colors.green : Colors.grey,
+        size: 20,
+      ),
+      const SizedBox(height: 4),
+      Text(
+        label,
+        style: TextStyle(
+          fontSize: 12,
+          color: active ? Colors.green : Colors.grey,
+        ),
+      ),
+    ],
+  );
+
+  Widget _buildControlButtons() => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 16),
+    child: Row(
+      children: [
+        Expanded(
+          child: ElevatedButton.icon(
+            onPressed: !_isScanning ? _startScanning : null,
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('Start'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.all(16),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: ElevatedButton.icon(
+            onPressed: _isScanning ? _stopScanning : null,
+            icon: const Icon(Icons.stop),
+            label: const Text('Stop'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.all(16),
+            ),
+          ),
         ),
       ],
     ),
   );
+
+  Widget _buildPowerSlider() => Padding(
+    padding: const EdgeInsets.all(16),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Antenna Power: $_powerLevel / $_maxPower',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        Slider(
+          value: _powerLevel.toDouble(),
+          min: 100,
+          max: _maxPower.toDouble(),
+          divisions: (_maxPower - 100) ~/ 10,
+          label: _powerLevel.toString(),
+          onChanged: (value) {
+            setState(() => _powerLevel = value.toInt());
+          },
+          onChangeEnd: (value) => _setPower(value.toInt()),
+        ),
+      ],
+    ),
+  );
+
+  Widget _buildTagsHeader() => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+    child: Row(
+      children: [
+        const Text(
+          'Scanned Tags',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+        const Spacer(),
+        Text(
+          '${_uniqueTagIds.length} unique',
+          style: const TextStyle(color: Colors.grey),
+        ),
+      ],
+    ),
+  );
+
+  Widget _buildTagsList() {
+    if (_scannedTags.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.nfc, size: 64, color: Colors.grey[400]),
+            const SizedBox(height: 16),
+            Text(
+              _status.isReady
+                  ? 'Press "Start" or trigger to scan'
+                  : 'Connect to reader first',
+              style: TextStyle(fontSize: 16, color: Colors.grey[600]),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView.builder(
+      itemCount: _scannedTags.length,
+      itemBuilder: (context, index) {
+        final tag = _scannedTags[index];
+        return Card(
+          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: ListTile(
+            leading: CircleAvatar(
+              backgroundColor: Colors.blue,
+              child: Text(
+                '${index + 1}',
+                style: const TextStyle(color: Colors.white),
+              ),
+            ),
+            title: Text(
+              tag.tagId,
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            subtitle: Text(
+              'RSSI: ${tag.rssi} dBm | Antenna: ${tag.antennaId} | Reads: ${tag.count}',
+              style: const TextStyle(fontSize: 11),
+            ),
+            trailing: Icon(Icons.nfc, color: Colors.blue[300]),
+          ),
+        );
+      },
+    );
+  }
 }
