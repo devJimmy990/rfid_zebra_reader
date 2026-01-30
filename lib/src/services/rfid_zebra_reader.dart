@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 import 'package:rfid_zebra_reader/src/models/rfid_event.dart';
+import 'package:rfid_zebra_reader/src/models/rfid_status.dart';
 import 'package:rfid_zebra_reader/src/services/app_logger.dart';
 
 class ZebraRfidReader {
@@ -11,455 +12,197 @@ class ZebraRfidReader {
 
   static Stream<RfidEvent>? _eventStream;
 
-  /// Get stream of RFID events with full status logging
+  /// Get stream of RFID events
   static Stream<RfidEvent> get eventStream {
-    try {
-      _logger.debug('Initializing event stream', source: 'ZebraRfidReader');
+    _eventStream ??= _eventChannel.receiveBroadcastStream().map((event) {
+      final Map<String, dynamic> eventMap = Map<String, dynamic>.from(event);
+      _logger.debug('Event: ${eventMap['type']}', source: 'EventStream');
+      return RfidEvent.fromMap(eventMap);
+    }).handleError((error) {
+      _logger.error('Event stream error', source: 'EventStream', error: error);
+      throw error;
+    });
 
-      _eventStream ??=
-          _eventChannel.receiveBroadcastStream().map((dynamic eventRaw) {
-        final Map<String, dynamic> event = Map<String, dynamic>.from(
-          eventRaw,
-        );
-
-        _logger.debug(
-          'Event received: ${event['type']}',
-          source: 'EventStream',
-        );
-
-        if (event['status'] != null) {
-          _logger.debug(
-            'Native status:\n${event['status']}',
-            source: 'EventStream',
-          );
-        }
-
-        return RfidEvent.fromMap(event);
-      }).handleError((error) {
-        _logger.error(
-          'Event stream error',
-          source: 'EventStream',
-          error: error,
-        );
-        throw error;
-      });
-
-      return _eventStream!;
-    } catch (e, stack) {
-      _logger.critical(
-        'Failed to create event stream',
-        source: 'ZebraRfidReader',
-        error: e,
-        stackTrace: stack,
-      );
-      rethrow;
-    }
+    return _eventStream!;
   }
 
-  /// Initialize SDK - MUST be called first
-  static Future<String> initialize() async {
+  /// Initialize the RFID reader
+  /// Automatically handles: permissions → SDK init → reader connection
+  /// Returns [RfidStatus] with full status information
+  static Future<RfidStatus> initialize() async {
     try {
-      _logger.info('Initializing SDK...', source: 'initialize');
+      _logger.info('Initializing RFID reader...', source: 'initialize');
 
-      final result = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>(
-        'initialize',
-      );
+      final result = await _methodChannel
+          .invokeMethod<Map<dynamic, dynamic>>('initialize');
 
       if (result == null) {
-        throw PlatformException(
-          code: 'NO_RESULT',
-          message: 'No response from native',
+        _logger.error('No response from native', source: 'initialize');
+        return RfidStatus(
+          permissionsGranted: false,
+          sdkInitialized: false,
+          readerConnected: false,
+          error: 'No response from native',
         );
       }
 
-      final String message = result['message'] as String? ?? 'Initialized';
-      final String nativeStatus = result['status'] as String? ?? 'No status';
+      final status = RfidStatus.fromMap(Map<String, dynamic>.from(result));
 
-      _logger.info(
-        'Initialize result: $message\nNative status:\n$nativeStatus',
-        source: 'initialize',
-      );
-
-      return message;
-    } catch (e, stack) {
-      String nativeStatus = 'No status available';
-      if (e is PlatformException && e.details is Map) {
-        final details = e.details as Map<dynamic, dynamic>;
-        nativeStatus = details['status'] as String? ?? nativeStatus;
-      }
-
-      _logger.error(
-        'Failed to initialize SDK\nNative status:\n$nativeStatus',
-        source: 'initialize',
-        error: e,
-        stackTrace: stack,
-      );
-      rethrow;
-    }
-  }
-
-  /// Get all available readers
-  static Future<List<Map<String, String>>> getAllAvailableReaders() async {
-    try {
-      _logger.info(
-        'Getting available readers...',
-        source: 'getAllAvailableReaders',
-      );
-
-      final result = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>(
-        'getAllAvailableReaders',
-      );
-
-      if (result == null) {
-        throw PlatformException(
-          code: 'NO_RESULT',
-          message: 'No response from native',
-        );
-      }
-
-      final String nativeStatus = result['status'] as String? ?? 'No status';
-      _logger.debug(
-        'Native status:\n$nativeStatus',
-        source: 'getAllAvailableReaders',
-      );
-
-      final List<dynamic>? readersList = result['readers'] as List<dynamic>?;
-
-      if (readersList == null) {
-        _logger.warning(
-          'No readers list in response',
-          source: 'getAllAvailableReaders',
-        );
-        return [];
-      }
-
-      final readers =
-          readersList.map((e) => Map<String, String>.from(e as Map)).toList();
-
-      _logger.info(
-        'Found ${readers.length} readers',
-        source: 'getAllAvailableReaders',
-      );
-
-      return readers;
-    } catch (e, stack) {
-      String nativeStatus = 'No status available';
-      if (e is PlatformException && e.details is Map) {
-        final details = e.details as Map<dynamic, dynamic>;
-        nativeStatus = details['status'] as String? ?? nativeStatus;
-        _logger.error(
-          'Failed to get readers\nNative status:\n$nativeStatus',
-          source: 'getAllAvailableReaders',
-          error: e,
-        );
+      if (status.hasError) {
+        _logger.warning('Initialize completed with error: ${status.error}',
+            source: 'initialize');
       } else {
-        _logger.error(
-          'Failed to get readers',
-          source: 'getAllAvailableReaders',
-          error: e,
-          stackTrace: stack,
-        );
+        _logger.info('Initialize successful: ${status.readerName}',
+            source: 'initialize');
       }
-      rethrow;
-    }
-  }
 
-  /// Check if reader is connected
-  static Future<bool> isConnected() async {
-    try {
-      _logger.info('Checking reader connection...', source: 'isConnected');
-
-      final result = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>(
-        'isReaderConnected',
-      );
-
-      if (result == null) return false;
-
-      final bool connected = result['connected'] as bool? ?? false;
-      final String nativeStatus = result['status'] as String? ?? 'No status';
-
-      _logger.debug(
-        'Reader connected: $connected\nNative status:\n$nativeStatus',
-        source: 'isConnected',
-      );
-
-      return connected;
+      return status;
     } catch (e, stack) {
-      if (e is PlatformException && e.details is Map) {
-        final details = e.details as Map;
-        final String nativeStatus = details['status'] as String? ?? 'No status';
-        _logger.error(
-          'Connection check failed\nNative status:\n$nativeStatus',
-          source: 'isConnected',
-          error: e,
-        );
-      } else {
-        _logger.error(
-          'Failed to check reader connection',
-          source: 'isConnected',
-          error: e,
-          stackTrace: stack,
-        );
-      }
-      rethrow;
+      _logger.error('Initialize failed',
+          source: 'initialize', error: e, stackTrace: stack);
+      return RfidStatus(
+        permissionsGranted: false,
+        sdkInitialized: false,
+        readerConnected: false,
+        error: 'Exception: $e',
+      );
     }
   }
 
-  /// Connect to RFID reader
-  /// [readerName] optional - if null, auto-selects first available reader
-  static Future<String> connect({String? readerName}) async {
+  /// Get current status
+  static Future<RfidStatus> getStatus() async {
     try {
-      _logger.info(
-        'Connecting to reader${readerName != null ? ": $readerName" : " (auto-select)"}...',
-        source: 'connect',
-      );
+      _logger.debug('Getting status...', source: 'getStatus');
 
-      final result = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>(
-        'connectReader',
-        {'readerName': readerName},
-      );
+      final result =
+          await _methodChannel.invokeMethod<Map<dynamic, dynamic>>('getStatus');
 
       if (result == null) {
-        throw PlatformException(
-          code: 'NO_RESULT',
-          message: 'No response from native',
+        return RfidStatus(
+          permissionsGranted: false,
+          sdkInitialized: false,
+          readerConnected: false,
+          error: 'No response',
         );
       }
 
-      final String message = result['message'] as String? ?? 'Connected';
-      final String nativeStatus = result['status'] as String? ?? 'No status';
-
-      _logger.info(
-        'Connect result: $message\nNative status:\n$nativeStatus',
-        source: 'connect',
-      );
-
-      return message;
+      return RfidStatus.fromMap(Map<String, dynamic>.from(result));
     } catch (e, stack) {
-      String nativeStatus = 'No status available';
-      if (e is PlatformException && e.details is Map) {
-        final details = e.details as Map<dynamic, dynamic>;
-        nativeStatus = details['status'] as String? ?? nativeStatus;
-      }
-
-      _logger.error(
-        'Failed to connect to reader\nNative status:\n$nativeStatus',
-        source: 'connect',
-        error: e,
-        stackTrace: stack,
+      _logger.error('Get status failed',
+          source: 'getStatus', error: e, stackTrace: stack);
+      return RfidStatus(
+        permissionsGranted: false,
+        sdkInitialized: false,
+        readerConnected: false,
+        error: 'Exception: $e',
       );
-      rethrow;
     }
   }
 
-  /// Disconnect from RFID reader
-  static Future<String> disconnect() async {
+  /// Check if permissions are granted
+  static Future<bool> isPermissionGranted() async {
     try {
-      _logger.info('Disconnecting from reader...', source: 'disconnect');
-
-      final result = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>(
-        'disconnectReader',
-      );
-
-      final String message = result?['message'] as String? ?? 'Disconnected';
-      final String nativeStatus = result?['status'] as String? ?? 'No status';
-
-      _logger.info(
-        'Disconnect result: $message\nNative status:\n$nativeStatus',
-        source: 'disconnect',
-      );
-
-      return message;
-    } catch (e, stack) {
-      String nativeStatus = 'No status';
-      if (e is PlatformException && e.details is Map) {
-        nativeStatus = (e.details as Map)['status'] as String? ?? nativeStatus;
-      }
-
-      _logger.error(
-        'Failed to disconnect\nNative status:\n$nativeStatus',
-        source: 'disconnect',
-        error: e,
-        stackTrace: stack,
-      );
-      rethrow;
+      final result = await _methodChannel
+          .invokeMethod<Map<dynamic, dynamic>>('isPermissionGranted');
+      return result?['granted'] as bool? ?? false;
+    } catch (e) {
+      _logger.error('Permission check failed',
+          source: 'isPermissionGranted', error: e);
+      return false;
     }
   }
 
-  /// Start RFID inventory
-  static Future<String> startInventory() async {
+  /// Disconnect from reader (manual)
+  static Future<bool> disconnect() async {
+    try {
+      _logger.info('Disconnecting...', source: 'disconnect');
+      await _methodChannel.invokeMethod('disconnect');
+      _logger.info('Disconnected', source: 'disconnect');
+      return true;
+    } catch (e, stack) {
+      _logger.error('Disconnect failed',
+          source: 'disconnect', error: e, stackTrace: stack);
+      return false;
+    }
+  }
+
+  /// Start scanning for RFID tags
+  static Future<bool> startInventory() async {
     try {
       _logger.info('Starting inventory...', source: 'startInventory');
-
-      final result = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>(
-        'startInventory',
-      );
-
-      final String message =
-          result?['message'] as String? ?? 'Inventory started';
-      final String nativeStatus = result?['status'] as String? ?? 'No status';
-
-      _logger.info(
-        'Start inventory result: $message\nNative status:\n$nativeStatus',
-        source: 'startInventory',
-      );
-
-      return message;
+      await _methodChannel.invokeMethod('startInventory');
+      _logger.info('Inventory started', source: 'startInventory');
+      return true;
     } catch (e, stack) {
-      String nativeStatus = 'No status';
-      if (e is PlatformException && e.details is Map) {
-        nativeStatus = (e.details as Map)['status'] as String? ?? nativeStatus;
-      }
-
-      _logger.error(
-        'Failed to start inventory\nNative status:\n$nativeStatus',
-        source: 'startInventory',
-        error: e,
-        stackTrace: stack,
-      );
-      rethrow;
+      _logger.error('Start inventory failed',
+          source: 'startInventory', error: e, stackTrace: stack);
+      return false;
     }
   }
 
-  /// Stop RFID inventory
-  static Future<String> stopInventory() async {
+  /// Stop scanning for RFID tags
+  static Future<bool> stopInventory() async {
     try {
       _logger.info('Stopping inventory...', source: 'stopInventory');
-
-      final result = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>(
-        'stopInventory',
-      );
-
-      final String message =
-          result?['message'] as String? ?? 'Inventory stopped';
-      final String nativeStatus = result?['status'] as String? ?? 'No status';
-
-      _logger.info(
-        'Stop inventory result: $message\nNative status:\n$nativeStatus',
-        source: 'stopInventory',
-      );
-
-      return message;
+      await _methodChannel.invokeMethod('stopInventory');
+      _logger.info('Inventory stopped', source: 'stopInventory');
+      return true;
     } catch (e, stack) {
-      String nativeStatus = 'No status';
-      if (e is PlatformException && e.details is Map) {
-        nativeStatus = (e.details as Map)['status'] as String? ?? nativeStatus;
-      }
-
-      _logger.error(
-        'Failed to stop inventory\nNative status:\n$nativeStatus',
-        source: 'stopInventory',
-        error: e,
-        stackTrace: stack,
-      );
-      rethrow;
+      _logger.error('Stop inventory failed',
+          source: 'stopInventory', error: e, stackTrace: stack);
+      return false;
     }
   }
 
-  /// Set antenna power level (0 to maxPower)
-  static Future<String> setAntennaPower(int powerLevel) async {
+  /// Set antenna power level (0 to maxPower, typically 270)
+  static Future<bool> setAntennaPower(int powerLevel) async {
     try {
-      _logger.info(
-        'Setting antenna power to $powerLevel...',
-        source: 'setAntennaPower',
-      );
-
-      final result = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>(
-        'setAntennaPower',
-        {'powerLevel': powerLevel},
-      );
-
-      final String message = result?['message'] as String? ?? 'Power set';
-      final String nativeStatus = result?['status'] as String? ?? 'No status';
-
-      _logger.info(
-        'Set power result: $message\nNative status:\n$nativeStatus',
-        source: 'setAntennaPower',
-      );
-
-      return message;
+      _logger.info('Setting power to $powerLevel...',
+          source: 'setAntennaPower');
+      await _methodChannel
+          .invokeMethod('setAntennaPower', {'powerLevel': powerLevel});
+      _logger.info('Power set to $powerLevel', source: 'setAntennaPower');
+      return true;
     } catch (e, stack) {
-      String nativeStatus = 'No status';
-      if (e is PlatformException && e.details is Map) {
-        nativeStatus = (e.details as Map)['status'] as String? ?? nativeStatus;
-      }
-
-      _logger.error(
-        'Failed to set antenna power\nNative status:\n$nativeStatus',
-        source: 'setAntennaPower',
-        error: e,
-        stackTrace: stack,
-      );
-      rethrow;
+      _logger.error('Set power failed',
+          source: 'setAntennaPower', error: e, stackTrace: stack);
+      return false;
     }
   }
 
-  /// Get antenna power level
-  static Future<Map<String, dynamic>> getAntennaPower() async {
+  /// Get current antenna power level
+  static Future<Map<String, int>> getAntennaPower() async {
     try {
       _logger.debug('Getting antenna power...', source: 'getAntennaPower');
 
-      final result = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>(
-        'getAntennaPower',
-      );
+      final result = await _methodChannel
+          .invokeMethod<Map<dynamic, dynamic>>('getAntennaPower');
 
       if (result == null) {
-        throw PlatformException(
-          code: 'NO_RESULT',
-          message: 'No response from native',
-        );
+        return {'currentPower': 0, 'maxPower': 270};
       }
-
-      final int currentPower = result['currentPower'] as int? ?? 0;
-      final int maxPower = result['maxPower'] as int? ?? 270;
-      final String nativeStatus = result['status'] as String? ?? 'No status';
-
-      _logger.debug(
-        'Antenna power: $currentPower / $maxPower\nNative status:\n$nativeStatus',
-        source: 'getAntennaPower',
-      );
 
       return {
-        'currentPower': currentPower,
-        'maxPower': maxPower,
-        'nativeStatus': nativeStatus,
+        'currentPower': result['currentPower'] as int? ?? 0,
+        'maxPower': result['maxPower'] as int? ?? 270,
       };
     } catch (e, stack) {
-      String nativeStatus = 'No status';
-      if (e is PlatformException && e.details is Map) {
-        nativeStatus = (e.details as Map)['status'] as String? ?? nativeStatus;
-      }
-
-      _logger.error(
-        'Failed to get antenna power\nNative status:\n$nativeStatus',
-        source: 'getAntennaPower',
-        error: e,
-        stackTrace: stack,
-      );
-      rethrow;
+      _logger.error('Get power failed',
+          source: 'getAntennaPower', error: e, stackTrace: stack);
+      return {'currentPower': 0, 'maxPower': 270};
     }
   }
 
   /// Get platform version
   static Future<String> getPlatformVersion() async {
     try {
-      final result = await _methodChannel.invokeMethod<Map<dynamic, dynamic>>(
-        'getPlatformVersion',
-      );
-
-      final String version = result?['version'] as String? ?? 'Unknown';
-
-      _logger.debug('Platform version: $version', source: 'getPlatformVersion');
-
-      return version;
-    } catch (e, stack) {
-      _logger.error(
-        'Failed to get platform version',
-        source: 'getPlatformVersion',
-        error: e,
-        stackTrace: stack,
-      );
-      rethrow;
+      final result = await _methodChannel
+          .invokeMethod<Map<dynamic, dynamic>>('getPlatformVersion');
+      return result?['version'] as String? ?? 'Unknown';
+    } catch (e) {
+      _logger.error('Get platform version failed',
+          source: 'getPlatformVersion', error: e);
+      return 'Unknown';
     }
   }
 }
