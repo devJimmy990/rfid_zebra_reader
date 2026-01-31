@@ -3,7 +3,14 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:rfid_zebra_reader/rfid_zebra_reader.dart';
 
-void main() => runApp(const MaterialApp(home: RfidReaderPage()));
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Just initialize - status updates will come through stream
+  ZebraRfidReader.initialize();
+
+  runApp(const MaterialApp(home: RfidReaderPage()));
+}
 
 class RfidReaderPage extends StatefulWidget {
   const RfidReaderPage({super.key});
@@ -13,14 +20,8 @@ class RfidReaderPage extends StatefulWidget {
 }
 
 class _RfidReaderPageState extends State<RfidReaderPage> {
-  // Status
-  RfidStatus _status = RfidStatus(
-    permissionsGranted: false,
-    sdkInitialized: false,
-    readerConnected: false,
-  );
-
-  bool _isInitializing = false;
+  // Status - now managed by stream
+  RfidStatus? _status;
   bool _isScanning = false;
 
   // Tags
@@ -31,14 +32,44 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
   int _powerLevel = 270;
   int _maxPower = 270;
 
-  // Event subscription
+  // Event subscriptions
   StreamSubscription<RfidEvent>? _eventSubscription;
+  StreamSubscription<RfidStatus>? _statusSubscription;
 
   @override
   void initState() {
     super.initState();
     _setupEventListener();
-    _initialize();
+    _setupStatusListener();
+  }
+
+  void _setupStatusListener() {
+    _statusSubscription = ZebraRfidReader.statusStream.listen(
+      (status) {
+        setState(() {
+          _status = status;
+          _maxPower = status.maxPower;
+
+          // Update power level when first connected
+          if (status.isReady && _powerLevel == 270) {
+            _powerLevel = status.maxPower;
+          }
+        });
+
+        // Show user feedback for important state changes
+        if (status.isReady && (_status == null || !_status!.isReady)) {
+          _showSnackBar('Connected to ${status.readerName}');
+          AppLogger().info('Ready: ${status.readerName}', source: 'UI');
+        } else if (status.hasError) {
+          _showSnackBar(status.error!);
+          AppLogger().error('Status error: ${status.error}', source: 'UI');
+        }
+      },
+      onError: (error) {
+        _showSnackBar('Status stream error: $error');
+        AppLogger().error('Status stream error', error: error);
+      },
+    );
   }
 
   void _setupEventListener() {
@@ -51,47 +82,14 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
     );
   }
 
-  Future<void> _initialize() async {
-    setState(() => _isInitializing = true);
-
-    AppLogger().info('Starting initialization...', source: 'UI');
-
-    final status = await ZebraRfidReader.initialize();
-
-    setState(() {
-      _status = status;
-      _isInitializing = false;
-      _maxPower = status.maxPower;
-      _powerLevel = status.maxPower;
-    });
-
-    if (status.hasError) {
-      _showSnackBar(status.error!);
-      AppLogger().error('Init failed: ${status.error}', source: 'UI');
-    } else if (status.isReady) {
-      _showSnackBar('Connected to ${status.readerName}');
-      AppLogger().info('Ready: ${status.readerName}', source: 'UI');
-    }
-  }
-
   void _handleRfidEvent(RfidEvent event) {
     switch (event.type) {
       case RfidEventType.connected:
-        setState(() {
-          _status = _status.copyWith(
-            readerConnected: true,
-            readerName: event.readerName,
-          );
-        });
         _showSnackBar('Connected to ${event.readerName}');
         break;
 
       case RfidEventType.disconnected:
         setState(() {
-          _status = _status.copyWith(
-            readerConnected: false,
-            isReconnecting: false,
-          );
           _isScanning = false;
         });
         _showSnackBar('Disconnected');
@@ -113,7 +111,7 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
 
       case RfidEventType.trigger:
         final pressed = event.triggerPressed ?? false;
-        if (pressed && _status.isReady && !_isScanning) {
+        if (pressed && _status?.isReady == true && !_isScanning) {
           _startScanning();
         } else if (!pressed && _isScanning) {
           _stopScanning();
@@ -138,7 +136,7 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
   }
 
   Future<void> _startScanning() async {
-    if (!_status.isReady) {
+    if (_status?.isReady != true) {
       _showSnackBar('Reader not ready');
       return;
     }
@@ -175,6 +173,12 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
     });
   }
 
+  Future<void> _retryInitialization() async {
+    _showSnackBar('Re-initializing...');
+    AppLogger().info('Manual re-initialization triggered', source: 'UI');
+    await ZebraRfidReader.initialize();
+  }
+
   void _showSnackBar(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -185,6 +189,8 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
   @override
   void dispose() {
     _eventSubscription?.cancel();
+    _statusSubscription?.cancel();
+    ZebraRfidReader.dispose();
     super.dispose();
   }
 
@@ -214,10 +220,10 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
         _buildStatusCard(),
 
         // Control Buttons
-        if (_status.isReady) _buildControlButtons(),
+        if (_status?.isReady == true) _buildControlButtons(),
 
         // Power Slider
-        if (_status.isReady) _buildPowerSlider(),
+        if (_status?.isReady == true) _buildPowerSlider(),
 
         const Divider(),
 
@@ -231,24 +237,33 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
   );
 
   Widget _buildStatusCard() {
+    final status = _status;
+    final isInitializing = status == null || status.isInitializing;
+
     Color statusColor;
     IconData statusIcon;
 
-    if (_isInitializing) {
+    if (status == null) {
       statusColor = Colors.orange;
       statusIcon = Icons.hourglass_empty;
-    } else if (_status.hasError) {
+    } else if (status.hasError) {
       statusColor = Colors.red;
       statusIcon = Icons.error;
-    } else if (_status.isReconnecting) {
+    } else if (status.isReconnecting) {
       statusColor = Colors.orange;
       statusIcon = Icons.sync;
-    } else if (_status.isReady) {
+    } else if (status.isReady) {
       statusColor = Colors.green;
       statusIcon = Icons.check_circle;
-    } else if (!_status.permissionsGranted) {
+    } else if (!status.permissionsGranted) {
       statusColor = Colors.red;
       statusIcon = Icons.lock;
+    } else if (!status.sdkInitialized) {
+      statusColor = Colors.orange;
+      statusIcon = Icons.settings;
+    } else if (!status.readerConnected) {
+      statusColor = Colors.orange;
+      statusIcon = Icons.bluetooth_searching;
     } else {
       statusColor = Colors.grey;
       statusIcon = Icons.bluetooth_disabled;
@@ -256,7 +271,7 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
 
     return Card(
       margin: const EdgeInsets.all(16),
-      color: statusColor.withOpacity(0.1),
+      color: statusColor.withValues(alpha: .1),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -270,9 +285,7 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        _isInitializing
-                            ? 'Initializing...'
-                            : _status.statusMessage,
+                        status?.statusMessage ?? 'Initializing...',
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
@@ -283,10 +296,22 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
                         'Tags: ${_uniqueTagIds.length} | Scanning: ${_isScanning ? "Yes" : "No"}',
                         style: TextStyle(fontSize: 14, color: Colors.grey[600]),
                       ),
+                      if (status != null && status.readerName != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            'Reader: ${status.readerName}',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey[600],
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ),
-                if (_isInitializing)
+                if (isInitializing || (status.isReconnecting == true))
                   const SizedBox(
                     width: 24,
                     height: 24,
@@ -301,20 +326,36 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
               children: [
                 _buildStatusIndicator(
                   'Permissions',
-                  _status.permissionsGranted,
+                  status?.permissionsGranted ?? false,
                 ),
-                _buildStatusIndicator('SDK', _status.sdkInitialized),
-                _buildStatusIndicator('Connected', _status.readerConnected),
+                _buildStatusIndicator('SDK', status?.sdkInitialized ?? false),
+                _buildStatusIndicator(
+                  'Connected',
+                  status?.readerConnected ?? false,
+                ),
               ],
             ),
             // Retry button if error
-            if (_status.hasError && !_isInitializing)
+            if (status?.hasError == true)
               Padding(
                 padding: const EdgeInsets.only(top: 12),
                 child: ElevatedButton.icon(
-                  onPressed: _initialize,
+                  onPressed: _retryInitialization,
                   icon: const Icon(Icons.refresh),
                   label: const Text('Retry'),
+                ),
+              ),
+            // Debug info
+            if (status != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  'State: ${status.shortStatus}',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: Colors.grey[500],
+                    fontFamily: 'monospace',
+                  ),
                 ),
               ),
           ],
@@ -424,9 +465,9 @@ class _RfidReaderPageState extends State<RfidReaderPage> {
             Icon(Icons.nfc, size: 64, color: Colors.grey[400]),
             const SizedBox(height: 16),
             Text(
-              _status.isReady
+              _status?.isReady == true
                   ? 'Press "Start" or trigger to scan'
-                  : 'Connect to reader first',
+                  : 'Waiting for reader connection...',
               style: TextStyle(fontSize: 16, color: Colors.grey[600]),
             ),
           ],

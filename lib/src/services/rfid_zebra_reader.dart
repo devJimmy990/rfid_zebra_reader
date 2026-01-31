@@ -11,6 +11,9 @@ class ZebraRfidReader {
   static final _logger = AppLogger();
 
   static Stream<RfidEvent>? _eventStream;
+  static StreamController<RfidStatus>? _statusController;
+  static Timer? _statusPollingTimer;
+  static RfidStatus? _lastStatus;
 
   /// Get stream of RFID events
   static Stream<RfidEvent> get eventStream {
@@ -26,54 +29,104 @@ class ZebraRfidReader {
     return _eventStream!;
   }
 
+  /// Get stream of RFID status updates
+  /// Automatically polls status until connected or error occurs
+  static Stream<RfidStatus> get statusStream {
+    if (_statusController == null || _statusController!.isClosed) {
+      _statusController = StreamController<RfidStatus>.broadcast(
+        onListen: _startStatusPolling,
+        onCancel: _stopStatusPolling,
+      );
+    }
+    return _statusController!.stream;
+  }
+
+  /// Start polling status from native
+  static void _startStatusPolling() {
+    _logger.debug('Starting status polling', source: 'StatusPolling');
+    _pollStatus(); // Initial poll
+    _statusPollingTimer?.cancel();
+    _statusPollingTimer = Timer.periodic(
+      const Duration(milliseconds: 500),
+      (_) => _pollStatus(),
+    );
+  }
+
+  /// Stop polling status
+  static void _stopStatusPolling() {
+    _logger.debug('Stopping status polling', source: 'StatusPolling');
+    _statusPollingTimer?.cancel();
+    _statusPollingTimer = null;
+  }
+
+  /// Poll status and emit to stream
+  static Future<void> _pollStatus() async {
+    try {
+      final status = await _getStatusInternal();
+
+      // Only emit if status changed or if it's an important state
+      if (_shouldEmitStatus(status)) {
+        _lastStatus = status;
+        _statusController?.add(status);
+
+        // Stop polling if we reached a stable state (ready or error)
+        if (status.isReady || (status.hasError && !status.isReconnecting)) {
+          _stopStatusPolling();
+        }
+      }
+    } catch (e) {
+      _logger.error('Status polling error', source: 'StatusPolling', error: e);
+    }
+  }
+
+  /// Check if we should emit this status update
+  static bool _shouldEmitStatus(RfidStatus newStatus) {
+    if (_lastStatus == null) return true;
+
+    // Emit if any important field changed
+    return _lastStatus!.permissionsGranted != newStatus.permissionsGranted ||
+        _lastStatus!.sdkInitialized != newStatus.sdkInitialized ||
+        _lastStatus!.readerConnected != newStatus.readerConnected ||
+        _lastStatus!.isReconnecting != newStatus.isReconnecting ||
+        _lastStatus!.error != newStatus.error;
+  }
+
   /// Initialize the RFID reader
   /// Automatically handles: permissions → SDK init → reader connection
-  /// Returns [RfidStatus] with full status information
-  static Future<RfidStatus> initialize() async {
+  /// Returns immediately and status updates come through [statusStream]
+  static Future<void> initialize() async {
     try {
       _logger.info('Initializing RFID reader...', source: 'initialize');
 
-      final result = await _methodChannel
-          .invokeMethod<Map<dynamic, dynamic>>('initialize');
+      // Start status polling to track initialization progress
+      _startStatusPolling();
 
-      if (result == null) {
-        _logger.error('No response from native', source: 'initialize');
-        return RfidStatus(
-          permissionsGranted: false,
-          sdkInitialized: false,
-          readerConnected: false,
-          error: 'No response from native',
-        );
-      }
-
-      final status = RfidStatus.fromMap(Map<String, dynamic>.from(result));
-
-      if (status.hasError) {
-        _logger.warning('Initialize completed with error: ${status.error}',
-            source: 'initialize');
-      } else {
-        _logger.info('Initialize successful: ${status.readerName}',
-            source: 'initialize');
-      }
-
-      return status;
+      // Trigger native initialization (fire and forget)
+      _methodChannel.invokeMethod('initialize').catchError((error) {
+        _logger.error('Initialize error', source: 'initialize', error: error);
+      });
     } catch (e, stack) {
       _logger.error('Initialize failed',
           source: 'initialize', error: e, stackTrace: stack);
-      return RfidStatus(
+
+      // Emit error status
+      _statusController?.add(RfidStatus(
         permissionsGranted: false,
         sdkInitialized: false,
         readerConnected: false,
         error: 'Exception: $e',
-      );
+      ));
     }
   }
 
-  /// Get current status
+  /// Get current status (one-time fetch)
   static Future<RfidStatus> getStatus() async {
-    try {
-      _logger.debug('Getting status...', source: 'getStatus');
+    return await _getStatusInternal();
+  }
 
+  /// Internal method to get status from native
+  static Future<RfidStatus> _getStatusInternal() async {
+    try {
       final result =
           await _methodChannel.invokeMethod<Map<dynamic, dynamic>>('getStatus');
 
@@ -117,6 +170,7 @@ class ZebraRfidReader {
     try {
       _logger.info('Disconnecting...', source: 'disconnect');
       await _methodChannel.invokeMethod('disconnect');
+      _stopStatusPolling();
       _logger.info('Disconnected', source: 'disconnect');
       return true;
     } catch (e, stack) {
@@ -204,5 +258,13 @@ class ZebraRfidReader {
           source: 'getPlatformVersion', error: e);
       return 'Unknown';
     }
+  }
+
+  /// Dispose resources (call when app is closing)
+  static void dispose() {
+    _stopStatusPolling();
+    _statusController?.close();
+    _statusController = null;
+    _lastStatus = null;
   }
 }
