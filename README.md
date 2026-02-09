@@ -5,33 +5,18 @@
 
 A Flutter plugin for seamless integration with Zebra RFID readers. Built specifically for Zebra TC27 and compatible devices, providing real-time tag scanning, antenna power control, and full Android 13+ support.
 
----
-
-## 📦 Installation
-
-Add to your `pubspec.yaml`:
-
-```yaml
-dependencies:
-  rfid_zebra_reader: ^0.0.2
-```
-
-Then run:
-
-```bash
-flutter pub get
-```
+> **Important:** This plugin requires a **real Zebra RFID device** (e.g., TC27) with a reader antenna. It **cannot** be tested on a mobile phone, emulator, or simulator. You must use an actual computer mobile device paired with a Zebra reader antenna.
 
 ---
 
-## ⚙️ Android Configuration
+## Android Configuration
 
-### **IMPORTANT:** Add Maven Repository
+### 1. Add Maven Repository
 
 The Zebra RFID SDK is hosted on GitHub. You need to add the repository to your app's Gradle configuration.
 
 <details>
-<summary><b>📘 Kotlin DSL</b> (build.gradle.kts) - Click to expand</summary>
+<summary><b>Kotlin DSL</b> (build.gradle.kts) - Click to expand</summary>
 
 <br>
 
@@ -42,7 +27,7 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        
+
         // Add Zebra RFID SDK repository
         maven {
             url = uri("https://raw.githubusercontent.com/devJimmy990/rfid_zebra_reader/main/android/maven")
@@ -54,7 +39,7 @@ allprojects {
 </details>
 
 <details>
-<summary><b>📗 Groovy</b> (build.gradle) - Click to expand</summary>
+<summary><b>Groovy</b> (build.gradle) - Click to expand</summary>
 
 <br>
 
@@ -65,7 +50,7 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        
+
         // Add Zebra RFID SDK repository
         maven {
             url "https://raw.githubusercontent.com/devJimmy990/rfid_zebra_reader/main/android/maven"
@@ -76,19 +61,171 @@ allprojects {
 
 </details>
 
-<br>
+### 2. Set Minimum SDK Version
 
-**That's it!** The plugin will automatically download and configure the Zebra SDK.
+In `your_app/android/app/build.gradle` (or `build.gradle.kts`), ensure `minSdk` is **26** or higher:
+
+```groovy
+android {
+    defaultConfig {
+        minSdk = 26
+    }
+}
+```
+
+### 3. Update AndroidManifest.xml
+
+In `your_app/android/app/src/main/AndroidManifest.xml`, add the `tools` namespace and `tools:replace` attribute:
+
+```xml
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        tools:replace="android:label"
+        android:label="your_app_name"
+        ... >
+        ...
+    </application>
+</manifest>
+```
+
+### 4. Add ProGuard Rules
+
+Create the file `your_app/android/app/proguard-rules.pro`:
+<details>
+<summary><b>proguard-rules.pro</b> - Click to expand</summary>
+
+```bash
+# --- Flutter Play Store Split Install ---
+-keep class com.google.android.play.core.** { *; }
+
+# --- Zebra RFID SDK (reflection-heavy) ---
+-keep class com.zebra.** { *; }
+
+# --- JSch (SFTP) ---
+-keep class com.jcraft.jsch.** { *; }
+
+# --- Xerces XML Parser ---
+-keep class org.apache.xerces.** { *; }
+-keep class org.w3c.dom.** { *; }
+
+# --- BouncyCastle Crypto ---
+-keep class org.bouncycastle.** { *; }
+
+# --- LLRP Toolkit (used by Zebra) ---
+-keep class org.llrp.** { *; }
+
+# Prevent warnings
+-dontwarn com.google.android.play.core.**
+-dontwarn com.jcraft.jsch.**
+-dontwarn org.apache.xerces.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.llrp.**
+
+# ============================================
+# FIX: javax.lang.model (Google Error Prone)
+# ============================================
+-dontwarn javax.lang.model.**
+-dontwarn com.google.errorprone.annotations.**
+-keep class javax.lang.model.** { *; }
+-keep class com.google.errorprone.annotations.** { *; }
+
+# ============================================
+# Additional javax warnings
+# ============================================
+-dontwarn javax.annotation.**
+-dontwarn javax.tools.**
+-keep class javax.annotation.** { *; }
+
+# ============================================
+# Keep Flutter classes
+# ============================================
+-keep class io.flutter.app.** { *; }
+-keep class io.flutter.plugin.** { *; }
+-keep class io.flutter.util.** { *; }
+-keep class io.flutter.view.** { *; }
+-keep class io.flutter.** { *; }
+-keep class io.flutter.plugins.** { *; }
+
+# ============================================
+# Keep native methods
+# ============================================
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
+
+# ============================================
+# Keep attributes for debugging
+# ============================================
+-keepattributes *Annotation*
+-keepattributes Signature
+-keepattributes InnerClasses
+-keepattributes EnclosingMethod
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
+
+# ============================================
+# Keep Parcelable implementations
+# ============================================
+-keepclassmembers class * implements android.os.Parcelable {
+    public static final android.os.Parcelable$Creator *;
+}
+
+# ============================================
+# Keep Serializable classes
+# ============================================
+-keepclassmembers class * implements java.io.Serializable {
+    static final long serialVersionUID;
+    private static final java.io.ObjectStreamField[] serialPersistentFields;
+    private void writeObject(java.io.ObjectOutputStream);
+    private void readObject(java.io.ObjectInputStream);
+    java.lang.Object writeReplace();
+    java.lang.Object readResolve();
+}
+
+# ============================================
+# Suppress warnings for common missing classes
+# ============================================
+-dontwarn org.conscrypt.**
+-dontwarn org.openjsse.**
+-dontwarn sun.security.**
+-dontwarn com.sun.**
+```
+
+</details>
+
+Then reference it in `your_app/android/app/build.gradle`:
+
+```groovy
+android {
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+```
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ```dart
 import 'package:rfid_zebra_reader/rfid_zebra_reader.dart';
 
-// Initialize SDK
+// Initialize (auto-handles: permissions -> SDK init -> reader connection)
 await ZebraRfidReader.initialize();
+
+// Monitor initialization status
+ZebraRfidReader.statusStream.listen((status) {
+  print(status.statusMessage); // e.g. "Initializing SDK...", "Connected to reader"
+  if (status.isReady) {
+    print('Reader is ready!');
+  }
+});
 
 // Listen for tag events
 ZebraRfidReader.eventStream.listen((event) {
@@ -97,79 +234,87 @@ ZebraRfidReader.eventStream.listen((event) {
   }
 });
 
-// Connect to reader
-await ZebraRfidReader.connect();
-
 // Start scanning
 await ZebraRfidReader.startInventory();
 
 // Stop scanning
 await ZebraRfidReader.stopInventory();
+
+// Clean up when done
+ZebraRfidReader.dispose();
 ```
 
 ---
 
-## 📚 Main Functions
+## Main Functions
 
-### **Core Methods**
+### Core Methods
 
-| Method | Description |
-|--------|-------------|
-| `initialize()` | Initialize the Zebra RFID SDK |
-| `getAllAvailableReaders()` | Get list of available RFID readers |
-| `connect({String? readerName})` | Connect to RFID reader (auto-selects if name not provided) |
-| `disconnect()` | Disconnect from current reader |
-| `isConnected()` | Check if reader is connected |
-| `startInventory()` | Start scanning for RFID tags |
-| `stopInventory()` | Stop tag scanning |
-| `setAntennaPower(int level)` | Set antenna power (0-270 dBm) |
-| `getAntennaPower()` | Get current antenna power level |
-| `getPlatformVersion()` | Get Android platform version |
+| Method | Return Type | Description |
+|--------|-------------|-------------|
+| `initialize()` | `Future<void>` | Initialize the RFID reader. Auto-handles permissions, SDK init, and reader connection. Status updates come through `statusStream` |
+| `getStatus()` | `Future<RfidStatus>` | Get current reader status (one-time fetch) |
+| `isPermissionGranted()` | `Future<bool>` | Check if required permissions are granted |
+| `disconnect()` | `Future<bool>` | Disconnect from current reader |
+| `startInventory()` | `Future<bool>` | Start scanning for RFID tags |
+| `stopInventory()` | `Future<bool>` | Stop tag scanning |
+| `setAntennaPower(int level)` | `Future<bool>` | Set antenna power level (0 to maxPower, typically 270) |
+| `getAntennaPower()` | `Future<Map<String, int>>` | Get current and max antenna power (`currentPower`, `maxPower`) |
+| `getPlatformVersion()` | `Future<String>` | Get Android platform version |
+| `dispose()` | `void` | Dispose resources (call when app is closing) |
 
-### **Event Stream**
+### Streams
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `eventStream` | `Stream<RfidEvent>` | Listen for real-time RFID events |
+| `eventStream` | `Stream<RfidEvent>` | Real-time RFID events (tag reads, triggers, connection changes) |
+| `statusStream` | `Stream<RfidStatus>` | Reader status updates during initialization and reconnection. Auto-polls until connected or error |
 
 ---
 
-## 📋 Models & Classes
+## Models & Classes
 
-### **Models** (`lib/src/models/`)
+### RfidEvent
 
-<details>
-<summary><b>RfidEvent</b> - RFID event representation</summary>
+| Property | Type | Description |
+|----------|------|-------------|
+| `type` | `RfidEventType` | Event type |
+| `data` | `dynamic` | Raw event data map |
+| `message` | `String?` | Event message |
+| `tags` | `List<RfidTag>?` | List of scanned tags (for `tagRead` events) |
+| `triggerPressed` | `bool?` | Trigger state (for `trigger` events) |
+| `errorMessage` | `String?` | Error description (for `error` events) |
+| `readerName` | `String?` | Reader name (for connection events) |
 
-<br>
+### RfidStatus
 
-**Properties:**
+| Property | Type | Description |
+|----------|------|-------------|
+| `permissionsGranted` | `bool` | Whether permissions are granted |
+| `sdkInitialized` | `bool` | Whether SDK is initialized |
+| `readerConnected` | `bool` | Whether reader is connected |
+| `isReconnecting` | `bool` | Whether reader is reconnecting |
+| `readerName` | `String?` | Connected reader name |
+| `maxPower` | `int` | Maximum antenna power (default 270) |
+| `error` | `String?` | Error message if any |
+| `isReady` | `bool` | `true` when permissions + SDK + connected |
+| `isInitializing` | `bool` | `true` when initialization is in progress |
+| `hasError` | `bool` | `true` when error exists |
+| `statusMessage` | `String` | Human-readable status message |
+| `shortStatus` | `String` | Short status code (e.g. `READY`, `ERROR`, `CONNECTING`) |
 
-- `type` - Event type (tagRead, trigger, connected, disconnected, error)
-- `tags` - List of scanned tags (for tagRead events)
-- `triggerPressed` - Trigger state (for trigger events)
-- `errorMessage` - Error description (for error events)
-- `readerName` - Reader name (for connection events)
+### RfidTag
 
-</details>
-
-<details>
-<summary><b>RfidTag</b> - Scanned RFID tag</summary>
-
-<br>
-
-**Properties:**
-
-- `tagId` - EPC tag identifier
-- `rssi` - Signal strength (dBm)
-- `antennaId` - Antenna that detected the tag
-- `count` - Number of times tag was read
-
-</details>
+| Property | Type | Description |
+|----------|------|-------------|
+| `tagId` | `String` | EPC tag identifier |
+| `rssi` | `int` | Signal strength (dBm) |
+| `antennaId` | `int` | Antenna that detected the tag |
+| `count` | `int` | Number of times tag was read |
 
 ---
 
-### **Services** (`lib/src/services/`)
+### Services (`lib/src/services/`)
 
 <details>
 <summary><b>ZebraRfidReader</b> - Main service class</summary>
@@ -178,7 +323,8 @@ await ZebraRfidReader.stopInventory();
 
 **Key Features:**
 
-- SDK initialization and lifecycle management
+- Auto-initialization (permissions, SDK, reader connection)
+- Status polling with automatic start/stop
 - Reader connection and configuration
 - Tag inventory operations
 - Antenna power control
@@ -202,7 +348,7 @@ await ZebraRfidReader.stopInventory();
 
 ---
 
-### **UI Screens** (`lib/src/screens/`)
+### UI Screens (`lib/src/screens/`)
 
 <details>
 <summary><b>LogViewerScreen</b> - Debug log viewer</summary>
@@ -222,48 +368,52 @@ await ZebraRfidReader.stopInventory();
 
 ---
 
-## 🎯 Event Types
+## Event Types
 
 ```dart
 enum RfidEventType {
-  tagRead,          // Tags were scanned
-  trigger,          // Hardware trigger pressed/released
-  connected,        // Reader connected
-  disconnected,     // Reader disconnected
-  readerAppeared,   // New reader detected
-  readerDisappeared,// Reader removed
-  initialized,      // SDK initialized
-  error,            // Error occurred
-  unknown,          // Unknown event
+  tagRead,           // Tags were scanned
+  trigger,           // Hardware trigger pressed/released
+  connected,         // Reader connected
+  disconnected,      // Reader disconnected
+  readerAppeared,    // New reader detected
+  readerDisappeared, // Reader removed
+  initialized,       // SDK initialized
+  reconnecting,      // Reader is reconnecting
+  inventoryStarted,  // Inventory scan started
+  inventoryStopped,  // Inventory scan stopped
+  ready,             // Reader is fully ready
+  error,             // Error occurred
+  unknown,           // Unknown event
 }
 ```
 
 ---
 
-## 🛠️ Requirements
+## Requirements
 
-- **Device:** Zebra TC27 or compatible Zebra RFID device
+- **Device:** Zebra TC27 or compatible Zebra RFID device with reader antenna
 - **Android:** API 26+ (Android 8.0+) with full Android 13+ support
 - **Flutter:** 3.3.0+
 - **Dart:** 3.0.0+
 
-⚠️ **Note:** Requires actual Zebra RFID hardware. Will not work in emulators.
+> **Note:** This plugin requires actual Zebra RFID hardware. It **will not work** on mobile phones, emulators, or simulators. You need a real computer mobile device with a Zebra reader antenna.
 
 ---
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
 <details>
-<summary><b>❌ Build Error: "Could not find com.zebra.rfid:rfid-api3:2.0.5.238"</b></summary>
+<summary><b>Build Error: "Could not find com.zebra.rfid:rfid-api3:2.0.5.238"</b></summary>
 
 <br>
 
-**Solution:** You forgot to add the Maven repository! See the [Android Configuration](#️-android-configuration) section above.
+**Solution:** You forgot to add the Maven repository! See the [Android Configuration](#android-configuration) section above.
 
 </details>
 
 <details>
-<summary><b>🔍 No Readers Found</b></summary>
+<summary><b>No Readers Found</b></summary>
 
 <br>
 
@@ -277,7 +427,7 @@ enum RfidEventType {
 </details>
 
 <details>
-<summary><b>🔌 Connection Failed</b></summary>
+<summary><b>Connection Failed</b></summary>
 
 <br>
 
@@ -290,21 +440,30 @@ enum RfidEventType {
 
 </details>
 
+<details>
+<summary><b>ProGuard / R8 build errors</b></summary>
+
+<br>
+
+**Solution:** Make sure you created `proguard-rules.pro` and referenced it in your `build.gradle`. See the [Add ProGuard Rules](#4-add-proguard-rules) section above.
+
+</details>
+
 ---
 
-## 📖 API Documentation
+## API Documentation
 
 For complete API documentation, visit: [pub.dev/documentation/rfid_zebra_reader](https://pub.dev/documentation/rfid_zebra_reader/latest/)
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTING.md) before submitting a PR.
 
 ---
 
-## 👨‍💻 Author
+## Author
 
 **Jimmy (@devJimmy990)**
 
@@ -313,7 +472,7 @@ Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTIN
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - Built with Zebra RFID SDK v2.0.5.238
 - Designed for Zebra TC27 and compatible devices
@@ -321,7 +480,7 @@ Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTIN
 
 ---
 
-## 📞 Support
+## Support
 
 - **Issues:** [GitHub Issues](https://github.com/devJimmy990/rfid_zebra_reader/issues)
 - **Discussions:** [GitHub Discussions](https://github.com/devJimmy990/rfid_zebra_reader/discussions)
@@ -329,10 +488,10 @@ Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTIN
 
 ---
 
-**⭐ If this plugin helped you, please star the repo!**
+**If this plugin helped you, please star the repo!**
 
 ---
 
 <p align="center">
-  Made with ❤️ by <a href="https://github.com/devJimmy990">devJimmy990</a>
+  Made with love by <a href="https://github.com/devJimmy990">devJimmy990</a>
 </p>
