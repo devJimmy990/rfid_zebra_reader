@@ -9,6 +9,10 @@ enum RfidEventType {
   readerAppeared,
   readerDisappeared,
   initialized,
+  reconnecting,
+  inventoryStarted,
+  inventoryStopped,
+  ready,
   error,
   unknown,
 }
@@ -17,83 +21,89 @@ enum RfidEventType {
 class RfidEvent {
   final RfidEventType type;
   final dynamic data;
+  final String? message;
 
-  RfidEvent({required this.type, this.data});
+  RfidEvent({
+    required this.type,
+    this.data,
+    this.message,
+  });
 
   factory RfidEvent.fromMap(Map<String, dynamic> map) {
     final typeString = map['type'] as String?;
-    RfidEventType eventType;
+    final eventType = _parseEventType(typeString);
 
+    return RfidEvent(
+      type: eventType,
+      data: map,
+      message: map['message'] as String?,
+    );
+  }
+
+  static RfidEventType _parseEventType(String? typeString) {
     switch (typeString) {
       case 'tagRead':
-        eventType = RfidEventType.tagRead;
-        break;
+        return RfidEventType.tagRead;
       case 'trigger':
-        eventType = RfidEventType.trigger;
-        break;
+        return RfidEventType.trigger;
       case 'connected':
-        eventType = RfidEventType.connected;
-        break;
+        return RfidEventType.connected;
       case 'disconnected':
-        eventType = RfidEventType.disconnected;
-        break;
+        return RfidEventType.disconnected;
       case 'readerAppeared':
-        eventType = RfidEventType.readerAppeared;
-        break;
+        return RfidEventType.readerAppeared;
       case 'readerDisappeared':
-        eventType = RfidEventType.readerDisappeared;
-        break;
+        return RfidEventType.readerDisappeared;
       case 'initialized':
-        eventType = RfidEventType.initialized;
-        break;
+        return RfidEventType.initialized;
+      case 'reconnecting':
+        return RfidEventType.reconnecting;
+      case 'inventory_started':
+        return RfidEventType.inventoryStarted;
+      case 'inventory_stopped':
+        return RfidEventType.inventoryStopped;
+      case 'ready':
+        return RfidEventType.ready;
       case 'error':
-        eventType = RfidEventType.error;
-        break;
+        return RfidEventType.error;
       default:
-        eventType = RfidEventType.unknown;
+        return RfidEventType.unknown;
     }
-
-    return RfidEvent(type: eventType, data: map);
   }
 
   /// Get tags from tagRead event
   List<RfidTag>? get tags {
-    if (type == RfidEventType.tagRead && data is Map) {
-      final tagsList = (data as Map)['tags'] as List?;
-      return tagsList
-          ?.map((t) => RfidTag.fromJson(Map<String, dynamic>.from(t)))
-          .toList();
-    }
-    return null;
+    if (type != RfidEventType.tagRead || data is! Map) return null;
+
+    final tagsList = (data as Map)['tags'] as List?;
+    if (tagsList == null) return null;
+
+    return tagsList
+        .map((t) => RfidTag.fromJson(Map<String, dynamic>.from(t as Map)))
+        .toList();
   }
 
   /// Get trigger state from trigger event
   bool? get triggerPressed {
-    if (type == RfidEventType.trigger && data is Map) {
-      return (data as Map)['pressed'] as bool?;
-    }
-    return null;
+    if (type != RfidEventType.trigger || data is! Map) return null;
+    return (data as Map)['pressed'] as bool?;
   }
 
   /// Get error message
   String? get errorMessage {
-    if (type == RfidEventType.error && data is Map) {
-      return (data as Map)['message'] as String?;
-    }
-    return null;
+    if (data is! Map) return null;
+    return (data as Map)['message'] as String? ??
+        (data as Map)['error'] as String?;
   }
 
   /// Get reader name
   String? get readerName {
-    if (data is Map) {
-      return (data as Map)['reader'] as String? ??
-          (data as Map)['name'] as String?;
-    }
-    return null;
+    if (data is! Map) return null;
+    return (data as Map)['readerName'] as String? ??
+        (data as Map)['reader'] as String? ??
+        (data as Map)['name'] as String?;
   }
 
   @override
-  String toString() {
-    return 'RfidEvent{type: $type, data: $data}';
-  }
+  String toString() => 'RfidEvent{type: $type, message: $message}';
 }

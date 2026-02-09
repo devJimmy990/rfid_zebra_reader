@@ -9,3 +9,8 @@
 
 * Enhance Linking with project
 * Fix sdk integration
+
+## 0.0.3
+
+* auto antenna conection with initialization
+* auto request needed permissions

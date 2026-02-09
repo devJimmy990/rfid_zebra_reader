@@ -25,10 +25,24 @@ class RFIDHandler(
 
     @Volatile
     private var isInitialized = false
+    
+    @Volatile
+    private var isConnectedFlag = false
+    
+    @Volatile
+    private var connectedReaderName: String? = null
+    
+    @Volatile
+    private var isReconnecting = false
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val status: StringBuilder = StringBuilder("RFIDHandler created")
+    private val reconnectHandler = Handler(Looper.getMainLooper())
     private var maxPower = 270
+    
+    // Reconnect settings
+    private val reconnectDelayMs = 3000L
+    private val maxReconnectAttempts = 5
+    private var reconnectAttempts = 0
 
     interface ResultCallback {
         fun onSuccess(data: Any?)
@@ -36,363 +50,401 @@ class RFIDHandler(
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // INITIALIZE - MANUAL CALL FROM FLUTTER
+    // GET CURRENT STATUS
     // ═══════════════════════════════════════════════════════════════════
 
-    fun initialize(callback: ResultCallback) {
-        status.append("\n[INIT] Initialize called at ${System.currentTimeMillis()}")
-        sendStatusEvent("initializing", "Starting SDK initialization...")
-
-        Thread {
-            try {
-                if (isInitialized) {
-                    status.append("\n[INIT] Already initialized")
-                    sendStatusEvent("initialized", "SDK already initialized")
-                    mainHandler.post {
-                        callback.onSuccess(mapOf(
-                            "status" to status.toString(),
-                            "message" to "Already initialized"
-                        ))
-                    }
-                    return@Thread
-                }
-
-                status.append("\n[INIT] Creating Readers instance...")
-                status.append("\n[INIT] Device: ${Build.MODEL} | Android: ${Build.VERSION.RELEASE}")
-
-                val transports = listOf(
-                    ENUM_TRANSPORT.BLUETOOTH,
-                    ENUM_TRANSPORT.SERVICE_USB,
-                    ENUM_TRANSPORT.SERVICE_SERIAL
-                )
-
-                var foundTransport: ENUM_TRANSPORT? = null
-                var initSuccess = false
-
-                for (transport in transports) {
-                    try {
-                        status.append("\n[INIT] Trying transport: $transport")
-
-                        val safeContext = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            Android13ContextWrapper(context)
-                        } else {
-                            context
-                        }
-
-                        readers = Readers(safeContext, transport)
-                        status.append("\n[INIT] Readers object created")
-
-                        val list = readers?.GetAvailableRFIDReaderList()
-                        val count = list?.size ?: 0
-                        status.append("\n[INIT] Found $count reader(s) on $transport")
-
-                        if (count > 0) {
-                            availableRFIDReaderList = list
-                            foundTransport = transport
-                            status.append("\n[INIT] SUCCESS on $transport!")
-
-                            list?.forEachIndexed { index, device ->
-                                status.append("\n[INIT] Reader[$index]: ${device.getName()} | ${device.getAddress()}")
-                            }
-
-                            initSuccess = true
-                            break
-                        } else {
-                            status.append("\n[INIT] No readers on $transport")
-                        }
-                    } catch (e: InvalidUsageException) {
-                        status.append("\n[INIT] InvalidUsageException on $transport: ${e.info}")
-                    } catch (e: Exception) {
-                        status.append("\n[INIT] Exception on $transport: ${e.message}")
-                    }
-                }
-
-                if (initSuccess) {
-                    isInitialized = true
-                    status.append("\n[INIT] SDK initialized on $foundTransport!")
-                    sendStatusEvent(
-                        "initialized",
-                        "SDK ready - ${availableRFIDReaderList?.size ?: 0} reader(s)",
-                        mapOf(
-                            "transport" to foundTransport.toString(),
-                            "readerCount" to (availableRFIDReaderList?.size ?: 0)
-                        )
-                    )
-
-                    mainHandler.post {
-                        callback.onSuccess(mapOf(
-                            "status" to status.toString(),
-                            "message" to "SDK initialized on $foundTransport",
-                            "transport" to foundTransport.toString(),
-                            "readerCount" to (availableRFIDReaderList?.size ?: 0)
-                        ))
-                    }
-                } else {
-                    status.append("\n[INIT] FAILED: No readers found on any transport")
-                    sendStatusEvent("error", "No readers found")
-
-                    mainHandler.post {
-                        callback.onError(
-                            "INIT_FAILED",
-                            "No readers found on any transport",
-                            mapOf("status" to status.toString())
-                        )
-                    }
-                }
-
-            } catch (e: Exception) {
-                status.append("\n[INIT ERROR] Exception: ${e.message}")
-                sendStatusEvent("error", "Initialization exception: ${e.message}")
-
-                mainHandler.post {
-                    callback.onError(
-                        "INIT_ERROR",
-                        "Initialization error: ${e.message}",
-                        mapOf("status" to status.toString())
-                    )
-                }
-            }
-        }.start()
+    fun getStatus(): Map<String, Any?> {
+        return mapOf(
+            "sdkInitialized" to isInitialized,
+            "readerConnected" to isConnectedFlag,
+            "readerName" to connectedReaderName,
+            "isReconnecting" to isReconnecting
+        )
     }
 
+    fun isSdkInitialized(): Boolean = isInitialized
+    
+    fun isReaderConnected(): Boolean = isConnectedFlag && reader?.isConnected == true
+
     // ═══════════════════════════════════════════════════════════════════
-    // GET ALL AVAILABLE READERS
+    // AUTO INITIALIZE - SDK + CONNECT
     // ═══════════════════════════════════════════════════════════════════
 
-    fun getAllAvailableReaders(callback: ResultCallback) {
-        status.append("\n[GET_READERS] Called")
+    fun autoInitialize(callback: ResultCallback) {
+        log("AUTO_INIT", "Starting auto initialization...")
+        sendStatusEvent("initializing", "Starting auto initialization...")
 
         Thread {
             try {
+                // Step 1: Initialize SDK
                 if (!isInitialized) {
-                    val errorMsg = "SDK not initialized. Call initialize() first."
-                    status.append("\n[GET_READERS ERROR] $errorMsg")
-                    mainHandler.post {
-                        callback.onError("SDK_NOT_INITIALIZED", errorMsg, mapOf("status" to status.toString()))
-                    }
-                    return@Thread
-                }
-
-                val readersList = mutableListOf<Map<String, String>>()
-
-                availableRFIDReaderList?.forEach { device ->
-                    try {
-                        readersList.add(mapOf(
-                            "name" to device.getName(),
-                            "address" to (device.getAddress() ?: "N/A"),
-                            "model" to (device.getRFIDReader()?.getHostName() ?: "Unknown")
-                        ))
-                        status.append("\n[GET_READERS] Found: ${device.getName()}")
-                    } catch (e: Exception) {
-                        status.append("\n[GET_READERS] Error reading device: ${e.message}")
-                    }
-                }
-
-                status.append("\n[GET_READERS] Total found: ${readersList.size}")
-
-                mainHandler.post {
-                    callback.onSuccess(mapOf(
-                        "status" to status.toString(),
-                        "readers" to readersList
-                    ))
-                }
-
-            } catch (e: Exception) {
-                status.append("\n[GET_READERS ERROR] Exception: ${e.message}")
-                mainHandler.post {
-                    callback.onError(
-                        "GET_READERS_ERROR",
-                        "Failed to get readers: ${e.message}",
-                        mapOf("status" to status.toString())
-                    )
-                }
-            }
-        }.start()
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // IS READER CONNECTED
-    // ═══════════════════════════════════════════════════════════════════
-
-    fun isReaderConnected(callback: ResultCallback) {
-        status.append("\n[IS_CONNECTED] Checking connection status")
-
-        Thread {
-            try {
-                val connected = reader != null && reader!!.isConnected
-                status.append("\n[IS_CONNECTED] Result: $connected")
-
-                mainHandler.post {
-                    callback.onSuccess(mapOf(
-                        "status" to status.toString(),
-                        "connected" to connected
-                    ))
-                }
-
-            } catch (e: Exception) {
-                status.append("\n[IS_CONNECTED ERROR] Exception: ${e.message}")
-                mainHandler.post {
-                    callback.onError(
-                        "CONNECTION_CHECK_ERROR",
-                        "Failed to check connection: ${e.message}",
-                        mapOf("status" to status.toString())
-                    )
-                }
-            }
-        }.start()
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // CONNECT READER
-    // ═══════════════════════════════════════════════════════════════════
-
-    fun connectReader(readerName: String?, callback: ResultCallback) {
-        status.append("\n[CONNECT] Called with reader: ${readerName ?: "auto-select"}")
-
-        Thread {
-            try {
-                if (!isInitialized) {
-                    val errorMsg = "SDK not initialized"
-                    status.append("\n[CONNECT ERROR] $errorMsg")
-                    mainHandler.post {
-                        callback.onError("SDK_NOT_INITIALIZED", errorMsg, mapOf("status" to status.toString()))
-                    }
-                    return@Thread
-                }
-
-                if (reader != null && reader!!.isConnected) {
-                    val msg = "Already connected to ${reader!!.getHostName()}"
-                    status.append("\n[CONNECT] $msg")
-                    mainHandler.post {
-                        callback.onSuccess(mapOf(
-                            "status" to status.toString(),
-                            "message" to msg
-                        ))
-                    }
-                    return@Thread
-                }
-
-                status.append("\n[CONNECT] Fetching available readers...")
-                getAvailableReaders()
-
-                if (availableRFIDReaderList.isNullOrEmpty()) {
-                    val errorMsg = "No readers available"
-                    status.append("\n[CONNECT ERROR] $errorMsg")
-                    mainHandler.post {
-                        callback.onError("NO_READERS", errorMsg, mapOf("status" to status.toString()))
-                    }
-                    return@Thread
-                }
-
-                if (readerName != null) {
-                    val foundReader = availableRFIDReaderList!!.find {
-                        it.getName().contains(readerName, ignoreCase = true)
-                    }
-                    if (foundReader != null) {
-                        readerDevice = foundReader
-                        reader = readerDevice?.getRFIDReader()
-                        status.append("\n[CONNECT] Selected reader by name: ${foundReader.getName()}")
-                    } else {
-                        val errorMsg = "Reader '$readerName' not found"
-                        status.append("\n[CONNECT ERROR] $errorMsg")
+                    log("AUTO_INIT", "Step 1: Initializing SDK...")
+                    val sdkResult = initializeSdkSync()
+                    
+                    if (!sdkResult.success) {
+                        log("AUTO_INIT", "SDK initialization failed: ${sdkResult.error}")
                         mainHandler.post {
-                            callback.onError("READER_NOT_FOUND", errorMsg, mapOf("status" to status.toString()))
+                            callback.onSuccess(mapOf(
+                                "permissionsGranted" to true,
+                                "sdkInitialized" to false,
+                                "readerConnected" to false,
+                                "readerName" to null,
+                                "error" to sdkResult.error
+                            ))
                         }
                         return@Thread
                     }
-                } else {
-                    readerDevice = availableRFIDReaderList!![0]
-                    reader = readerDevice?.getRFIDReader()
-                    status.append("\n[CONNECT] Auto-selected first reader: ${readerDevice?.getName()}")
+                    log("AUTO_INIT", "SDK initialized successfully")
                 }
 
-                val result = connectToReader()
+                // Step 2: Connect to reader
+                log("AUTO_INIT", "Step 2: Connecting to reader...")
+                val connectResult = connectReaderSync(null)
+                
+                if (!connectResult.success) {
+                    log("AUTO_INIT", "Reader connection failed: ${connectResult.error}")
+                    mainHandler.post {
+                        callback.onSuccess(mapOf(
+                            "permissionsGranted" to true,
+                            "sdkInitialized" to true,
+                            "readerConnected" to false,
+                            "readerName" to null,
+                            "error" to connectResult.error
+                        ))
+                    }
+                    return@Thread
+                }
+
+                log("AUTO_INIT", "Auto initialization completed successfully!")
+                sendStatusEvent("ready", "Connected to ${connectedReaderName}", mapOf(
+                    "readerName" to connectedReaderName
+                ))
 
                 mainHandler.post {
-                    if (result.contains("Connected", ignoreCase = true)) {
-                        callback.onSuccess(mapOf(
-                            "status" to status.toString(),
-                            "message" to result
-                        ))
-                    } else {
-                        callback.onError(
-                            "CONNECTION_FAILED",
-                            result,
-                            mapOf("status" to status.toString())
-                        )
-                    }
+                    callback.onSuccess(mapOf(
+                        "permissionsGranted" to true,
+                        "sdkInitialized" to true,
+                        "readerConnected" to true,
+                        "readerName" to connectedReaderName,
+                        "error" to null
+                    ))
                 }
 
             } catch (e: Exception) {
-                status.append("\n[CONNECT ERROR] Exception: ${e.message}")
+                log("AUTO_INIT", "Exception: ${e.message}")
                 mainHandler.post {
-                    callback.onError(
-                        "CONNECT_ERROR",
-                        "Connection error: ${e.message}",
-                        mapOf("status" to status.toString())
-                    )
+                    callback.onSuccess(mapOf(
+                        "permissionsGranted" to true,
+                        "sdkInitialized" to isInitialized,
+                        "readerConnected" to isConnectedFlag,
+                        "readerName" to connectedReaderName,
+                        "error" to "Exception: ${e.message}"
+                    ))
                 }
             }
         }.start()
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // DISCONNECT READER
+    // SYNCHRONOUS HELPERS FOR AUTO INIT
     // ═══════════════════════════════════════════════════════════════════
 
-    fun disconnectReader(callback: ResultCallback) {
-        status.append("\n[DISCONNECT] Called")
+    private data class SyncResult(val success: Boolean, val error: String? = null)
+
+    private fun initializeSdkSync(): SyncResult {
+        try {
+            if (isInitialized) {
+                return SyncResult(true)
+            }
+
+            log("SDK_INIT", "Device: ${Build.MODEL} | Android: ${Build.VERSION.RELEASE}")
+
+            val transports = listOf(
+                ENUM_TRANSPORT.BLUETOOTH,
+                ENUM_TRANSPORT.SERVICE_USB,
+                ENUM_TRANSPORT.SERVICE_SERIAL
+            )
+
+            for (transport in transports) {
+                try {
+                    log("SDK_INIT", "Trying transport: $transport")
+
+                    val safeContext = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        Android13ContextWrapper(context)
+                    } else {
+                        context
+                    }
+
+                    readers = Readers(safeContext, transport)
+
+                    val list = readers?.GetAvailableRFIDReaderList()
+                    val count = list?.size ?: 0
+                    log("SDK_INIT", "Found $count reader(s) on $transport")
+
+                    if (count > 0) {
+                        availableRFIDReaderList = list
+                        isInitialized = true
+                        log("SDK_INIT", "SUCCESS on $transport!")
+                        
+                        list?.forEachIndexed { index, device ->
+                            log("SDK_INIT", "Reader[$index]: ${device.getName()}")
+                        }
+                        
+                        return SyncResult(true)
+                    }
+                } catch (e: InvalidUsageException) {
+                    log("SDK_INIT", "InvalidUsageException on $transport: ${e.info}")
+                } catch (e: Exception) {
+                    log("SDK_INIT", "Exception on $transport: ${e.message}")
+                }
+            }
+
+            return SyncResult(false, "No RFID readers found on any transport")
+
+        } catch (e: Exception) {
+            return SyncResult(false, "SDK initialization error: ${e.message}")
+        }
+    }
+
+    private fun connectReaderSync(readerName: String?): SyncResult {
+        try {
+            // Check if already connected
+            if (reader != null && reader!!.isConnected) {
+                isConnectedFlag = true
+                connectedReaderName = reader!!.hostName
+                log("CONNECT", "Already connected to $connectedReaderName")
+                return SyncResult(true)
+            }
+
+            // Refresh reader list
+            refreshAvailableReaders()
+
+            if (availableRFIDReaderList.isNullOrEmpty()) {
+                log("CONNECT", "No readers in list")
+                return SyncResult(false, "No readers available. Make sure Bluetooth is enabled and the reader is powered on.")
+            }
+
+            // Select reader
+            if (readerName != null) {
+                val foundReader = availableRFIDReaderList!!.find {
+                    it.getName().contains(readerName, ignoreCase = true)
+                }
+                if (foundReader != null) {
+                    readerDevice = foundReader
+                    reader = readerDevice?.rfidReader
+                    log("CONNECT", "Selected reader by name: ${foundReader.getName()}")
+                } else {
+                    return SyncResult(false, "Reader '$readerName' not found")
+                }
+            } else {
+                readerDevice = availableRFIDReaderList!![0]
+                reader = readerDevice?.rfidReader
+                log("CONNECT", "Auto-selected reader: ${readerDevice?.getName()}")
+            }
+
+            // Connect with retry logic
+            reader?.let { rfidReader ->
+                if (!rfidReader.isConnected) {
+                    val hostname = rfidReader.hostName ?: readerDevice?.getName() ?: "Unknown"
+                    log("CONNECT", "Attempting connection to $hostname...")
+
+                    // First attempt
+                    try {
+                        rfidReader.connect()
+                        log("CONNECT", "connect() completed")
+                    } catch (e: OperationFailureException) {
+                        log("CONNECT", "First connect attempt failed: ${e.vendorMessage ?: e.message ?: "Unknown error"}")
+                        
+                        // Wait and retry
+                        Thread.sleep(1000)
+                        
+                        try {
+                            log("CONNECT", "Retrying connection...")
+                            rfidReader.connect()
+                            log("CONNECT", "Retry connect() completed")
+                        } catch (e2: OperationFailureException) {
+                            val errorMsg = e2.vendorMessage ?: e2.message ?: "Connection failed"
+                            log("CONNECT", "Retry failed: $errorMsg")
+                            return SyncResult(false, "Connection failed: $errorMsg. Try restarting the reader.")
+                        }
+                    }
+
+                    // Small delay before configuration
+                    Thread.sleep(500)
+
+                    // Configure
+                    try {
+                        configureReader()
+                    } catch (configError: Exception) {
+                        log("CONNECT", "Configuration warning: ${configError.message}")
+                        // Continue anyway, connection might still work
+                    }
+
+                    if (rfidReader.isConnected) {
+                        isConnectedFlag = true
+                        connectedReaderName = hostname
+                        reconnectAttempts = 0
+                        log("CONNECT", "Successfully connected to $hostname")
+                        return SyncResult(true)
+                    } else {
+                        log("CONNECT", "isConnected returned false after connect()")
+                        return SyncResult(false, "Connection verification failed. Reader may need restart.")
+                    }
+                } else {
+                    isConnectedFlag = true
+                    connectedReaderName = rfidReader.hostName
+                    log("CONNECT", "Reader was already connected")
+                    return SyncResult(true)
+                }
+            }
+
+            return SyncResult(false, "Reader object is null")
+
+        } catch (e: InvalidUsageException) {
+            val errorMsg = e.info ?: e.message ?: "Invalid usage"
+            log("CONNECT", "InvalidUsageException: $errorMsg")
+            return SyncResult(false, "Invalid usage: $errorMsg")
+        } catch (e: OperationFailureException) {
+            val errorMsg = e.vendorMessage ?: e.message ?: "Operation failed"
+            log("CONNECT", "OperationFailureException: $errorMsg")
+            return SyncResult(false, "Operation failed: $errorMsg")
+        } catch (e: Exception) {
+            log("CONNECT", "Exception: ${e.javaClass.simpleName} - ${e.message}")
+            return SyncResult(false, "${e.javaClass.simpleName}: ${e.message ?: "Unknown error"}")
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // AUTO RECONNECT
+    // ═══════════════════════════════════════════════════════════════════
+
+    private fun startAutoReconnect() {
+        if (isReconnecting) {
+            log("RECONNECT", "Already reconnecting, skipping...")
+            return
+        }
+
+        isReconnecting = true
+        reconnectAttempts = 0
+        
+        log("RECONNECT", "Starting auto-reconnect...")
+        sendStatusEvent("reconnecting", "Reader disconnected, attempting to reconnect...")
+        
+        attemptReconnect()
+    }
+
+    private fun attemptReconnect() {
+        if (!isReconnecting) return
+        
+        reconnectAttempts++
+        log("RECONNECT", "Attempt $reconnectAttempts of $maxReconnectAttempts")
 
         Thread {
             try {
-                if (reader == null) {
-                    val msg = "No reader to disconnect"
-                    status.append("\n[DISCONNECT] $msg")
+                // Refresh reader list
+                refreshAvailableReaders()
+
+                if (availableRFIDReaderList.isNullOrEmpty()) {
+                    log("RECONNECT", "No readers found")
+                    scheduleNextReconnect()
+                    return@Thread
+                }
+
+                // Try to reconnect
+                readerDevice = availableRFIDReaderList!![0]
+                reader = readerDevice?.rfidReader
+
+                reader?.let { rfidReader ->
+                    if (!rfidReader.isConnected) {
+                        rfidReader.connect()
+                        configureReader()
+
+                        if (rfidReader.isConnected) {
+                            isConnectedFlag = true
+                            connectedReaderName = rfidReader.hostName
+                            isReconnecting = false
+                            reconnectAttempts = 0
+                            
+                            log("RECONNECT", "Reconnected successfully to ${connectedReaderName}")
+                            sendStatusEvent("connected", "Reconnected to ${connectedReaderName}", mapOf(
+                                "readerName" to connectedReaderName
+                            ))
+                            return@Thread
+                        }
+                    }
+                }
+
+                scheduleNextReconnect()
+
+            } catch (e: Exception) {
+                log("RECONNECT", "Reconnect attempt failed: ${e.message}")
+                scheduleNextReconnect()
+            }
+        }.start()
+    }
+
+    private fun scheduleNextReconnect() {
+        if (reconnectAttempts >= maxReconnectAttempts) {
+            log("RECONNECT", "Max reconnect attempts reached")
+            isReconnecting = false
+            sendStatusEvent("disconnected", "Failed to reconnect after $maxReconnectAttempts attempts", mapOf(
+                "error" to "Max reconnect attempts reached"
+            ))
+            return
+        }
+
+        reconnectHandler.postDelayed({
+            attemptReconnect()
+        }, reconnectDelayMs)
+    }
+
+    private fun stopAutoReconnect() {
+        isReconnecting = false
+        reconnectHandler.removeCallbacksAndMessages(null)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // MANUAL DISCONNECT
+    // ═══════════════════════════════════════════════════════════════════
+
+    fun disconnectReader(callback: ResultCallback) {
+        log("DISCONNECT", "Manual disconnect called")
+        stopAutoReconnect()
+
+        Thread {
+            try {
+                if (reader == null || !reader!!.isConnected) {
+                    isConnectedFlag = false
+                    connectedReaderName = null
                     mainHandler.post {
                         callback.onSuccess(mapOf(
-                            "status" to status.toString(),
-                            "message" to msg
+                            "message" to "Already disconnected",
+                            "status" to getStatus()
                         ))
                     }
                     return@Thread
                 }
 
-                if (!reader!!.isConnected) {
-                    val msg = "Already disconnected"
-                    status.append("\n[DISCONNECT] $msg")
-                    mainHandler.post {
-                        callback.onSuccess(mapOf(
-                            "status" to status.toString(),
-                            "message" to msg
-                        ))
-                    }
-                    return@Thread
-                }
-
-                status.append("\n[DISCONNECT] Removing event listener...")
                 eventHandler?.let { reader!!.Events.removeEventsListener(it) }
-
-                status.append("\n[DISCONNECT] Calling reader.disconnect()...")
                 reader!!.disconnect()
 
-                status.append("\n[DISCONNECT] Disconnected successfully")
+                isConnectedFlag = false
+                connectedReaderName = null
+
+                log("DISCONNECT", "Disconnected successfully")
                 sendStatusEvent("disconnected", "Reader disconnected")
 
                 mainHandler.post {
                     callback.onSuccess(mapOf(
-                        "status" to status.toString(),
-                        "message" to "Disconnected successfully"
+                        "message" to "Disconnected successfully",
+                        "status" to getStatus()
                     ))
                 }
 
             } catch (e: Exception) {
-                status.append("\n[DISCONNECT ERROR] Exception: ${e.message}")
+                log("DISCONNECT", "Error: ${e.message}")
                 mainHandler.post {
-                    callback.onError(
-                        "DISCONNECT_ERROR",
-                        "Disconnect failed: ${e.message}",
-                        mapOf("status" to status.toString())
-                    )
+                    callback.onError("DISCONNECT_ERROR", "Disconnect failed: ${e.message}", null)
                 }
             }
         }.start()
@@ -403,67 +455,56 @@ class RFIDHandler(
     // ═══════════════════════════════════════════════════════════════════
 
     fun startInventory(callback: ResultCallback) {
-        status.append("\n[START_INV] Called")
+        log("INVENTORY", "Start inventory called")
 
         Thread {
             try {
                 if (reader == null || !reader!!.isConnected) {
-                    val errorMsg = "Reader not connected"
-                    status.append("\n[START_INV ERROR] $errorMsg")
                     mainHandler.post {
-                        callback.onError("READER_NOT_CONNECTED", errorMsg, mapOf("status" to status.toString()))
+                        callback.onError("NOT_CONNECTED", "Reader not connected", getStatus())
                     }
                     return@Thread
                 }
 
-                status.append("\n[START_INV] Calling reader.Actions.Inventory.perform()...")
-                
                 try {
                     reader!!.Actions.Inventory.perform()
-                    status.append("\n[START_INV] Inventory started successfully")
-                    sendStatusEvent("inventory_started", "Inventory started")
+                    log("INVENTORY", "Inventory started")
+                    sendStatusEvent("inventory_started", "Scanning for tags...")
 
                     mainHandler.post {
                         callback.onSuccess(mapOf(
-                            "status" to status.toString(),
-                            "message" to "Inventory started"
+                            "message" to "Inventory started",
+                            "status" to getStatus()
                         ))
                     }
                 } catch (e: OperationFailureException) {
-                    status.append("\n[START_INV] First attempt failed, retrying...")
+                    // Retry once
+                    log("INVENTORY", "First attempt failed, retrying...")
                     try {
                         reader!!.Actions.Inventory.stop()
-                        Thread.sleep(500)
+                        Thread.sleep(300)
                         reader!!.Actions.Inventory.perform()
-                        status.append("\n[START_INV] Inventory started (retry success)")
-                        sendStatusEvent("inventory_started", "Inventory started")
+                        
+                        log("INVENTORY", "Inventory started (retry)")
+                        sendStatusEvent("inventory_started", "Scanning for tags...")
 
                         mainHandler.post {
                             callback.onSuccess(mapOf(
-                                "status" to status.toString(),
-                                "message" to "Inventory started"
+                                "message" to "Inventory started",
+                                "status" to getStatus()
                             ))
                         }
                     } catch (retryE: Exception) {
-                        status.append("\n[START_INV ERROR] Retry failed: ${retryE.message}")
                         mainHandler.post {
-                            callback.onError(
-                                "START_INVENTORY_FAILED",
-                                "Failed to start: ${e.vendorMessage}",
-                                mapOf("status" to status.toString())
-                            )
+                            callback.onError("START_FAILED", "Failed to start: ${e.vendorMessage}", getStatus())
                         }
                     }
                 }
 
             } catch (e: Exception) {
-                status.append("\n[START_INV ERROR] Exception: ${e.message}")
+                log("INVENTORY", "Error: ${e.message}")
                 mainHandler.post {
-                    callback.onError(
-                        "START_INVENTORY_ERROR",
-                        "Failed to start: ${e.message}",
-                        mapOf("status" to status.toString())
-                    )
+                    callback.onError("INVENTORY_ERROR", "Error: ${e.message}", getStatus())
                 }
             }
         }.start()
@@ -474,40 +515,32 @@ class RFIDHandler(
     // ═══════════════════════════════════════════════════════════════════
 
     fun stopInventory(callback: ResultCallback) {
-        status.append("\n[STOP_INV] Called")
+        log("INVENTORY", "Stop inventory called")
 
         Thread {
             try {
                 if (reader == null || !reader!!.isConnected) {
-                    val errorMsg = "Reader not connected"
-                    status.append("\n[STOP_INV ERROR] $errorMsg")
                     mainHandler.post {
-                        callback.onError("READER_NOT_CONNECTED", errorMsg, mapOf("status" to status.toString()))
+                        callback.onError("NOT_CONNECTED", "Reader not connected", getStatus())
                     }
                     return@Thread
                 }
 
-                status.append("\n[STOP_INV] Calling reader.Actions.Inventory.stop()...")
                 reader!!.Actions.Inventory.stop()
-                status.append("\n[STOP_INV] Inventory stopped successfully")
-
-                sendStatusEvent("inventory_stopped", "Inventory stopped")
+                log("INVENTORY", "Inventory stopped")
+                sendStatusEvent("inventory_stopped", "Scanning stopped")
 
                 mainHandler.post {
                     callback.onSuccess(mapOf(
-                        "status" to status.toString(),
-                        "message" to "Inventory stopped"
+                        "message" to "Inventory stopped",
+                        "status" to getStatus()
                     ))
                 }
 
             } catch (e: Exception) {
-                status.append("\n[STOP_INV ERROR] Exception: ${e.message}")
+                log("INVENTORY", "Error: ${e.message}")
                 mainHandler.post {
-                    callback.onError(
-                        "STOP_INVENTORY_ERROR",
-                        "Failed to stop: ${e.message}",
-                        mapOf("status" to status.toString())
-                    )
+                    callback.onError("STOP_ERROR", "Error: ${e.message}", getStatus())
                 }
             }
         }.start()
@@ -518,53 +551,42 @@ class RFIDHandler(
     // ═══════════════════════════════════════════════════════════════════
 
     fun setAntennaPower(powerLevel: Int, callback: ResultCallback) {
-        status.append("\n[SET_POWER] Called with power: $powerLevel")
+        log("POWER", "Set antenna power to $powerLevel")
 
         Thread {
             try {
                 if (reader == null || !reader!!.isConnected) {
-                    val errorMsg = "Reader not connected"
-                    status.append("\n[SET_POWER ERROR] $errorMsg")
                     mainHandler.post {
-                        callback.onError("READER_NOT_CONNECTED", errorMsg, mapOf("status" to status.toString()))
+                        callback.onError("NOT_CONNECTED", "Reader not connected", getStatus())
                     }
                     return@Thread
                 }
 
                 if (powerLevel !in 0..maxPower) {
-                    val errorMsg = "Invalid power level. Must be 0-$maxPower"
-                    status.append("\n[SET_POWER ERROR] $errorMsg")
                     mainHandler.post {
-                        callback.onError("INVALID_POWER_LEVEL", errorMsg, mapOf("status" to status.toString()))
+                        callback.onError("INVALID_POWER", "Power must be 0-$maxPower", null)
                     }
                     return@Thread
                 }
 
-                status.append("\n[SET_POWER] Getting antenna config...")
                 val config = reader!!.Config.Antennas.getAntennaRfConfig(1)
                 config.setTransmitPowerIndex(powerLevel)
-
-                status.append("\n[SET_POWER] Setting antenna config...")
                 reader!!.Config.Antennas.setAntennaRfConfig(1, config)
 
-                status.append("\n[SET_POWER] Power set to $powerLevel successfully")
+                log("POWER", "Power set to $powerLevel")
 
                 mainHandler.post {
                     callback.onSuccess(mapOf(
-                        "status" to status.toString(),
                         "message" to "Power set to $powerLevel",
-                        "powerLevel" to powerLevel
+                        "powerLevel" to powerLevel,
+                        "maxPower" to maxPower
                     ))
                 }
 
             } catch (e: Exception) {
-                status.append("\n[SET_POWER ERROR] Exception: ${e.message}")
+                log("POWER", "Error: ${e.message}")
                 mainHandler.post {
-                    callback.onError(
-                        "SET_POWER_ERROR",
-                        "Failed to set power: ${e.message}",
-                        mapOf("status" to status.toString())
-                    )
+                    callback.onError("POWER_ERROR", "Error: ${e.message}", null)
                 }
             }
         }.start()
@@ -575,44 +597,52 @@ class RFIDHandler(
     // ═══════════════════════════════════════════════════════════════════
 
     fun getAntennaPower(callback: ResultCallback) {
-        status.append("\n[GET_POWER] Called")
+        log("POWER", "Get antenna power")
 
         Thread {
             try {
                 if (reader == null || !reader!!.isConnected) {
-                    val errorMsg = "Reader not connected"
-                    status.append("\n[GET_POWER ERROR] $errorMsg")
                     mainHandler.post {
-                        callback.onError("READER_NOT_CONNECTED", errorMsg, mapOf("status" to status.toString()))
+                        callback.onError("NOT_CONNECTED", "Reader not connected", getStatus())
                     }
                     return@Thread
                 }
 
-                status.append("\n[GET_POWER] Getting antenna config...")
                 val config = reader!!.Config.Antennas.getAntennaRfConfig(1)
                 val currentPower = config.getTransmitPowerIndex()
 
-                status.append("\n[GET_POWER] Current: $currentPower, Max: $maxPower")
+                log("POWER", "Current: $currentPower, Max: $maxPower")
 
                 mainHandler.post {
                     callback.onSuccess(mapOf(
-                        "status" to status.toString(),
                         "currentPower" to currentPower,
                         "maxPower" to maxPower
                     ))
                 }
 
             } catch (e: Exception) {
-                status.append("\n[GET_POWER ERROR] Exception: ${e.message}")
+                log("POWER", "Error: ${e.message}")
                 mainHandler.post {
-                    callback.onError(
-                        "GET_POWER_ERROR",
-                        "Failed to get power: ${e.message}",
-                        mapOf("status" to status.toString())
-                    )
+                    callback.onError("POWER_ERROR", "Error: ${e.message}", null)
                 }
             }
         }.start()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // GET FULL STATUS
+    // ═══════════════════════════════════════════════════════════════════
+
+    fun getFullStatus(callback: ResultCallback) {
+        mainHandler.post {
+            callback.onSuccess(mapOf(
+                "sdkInitialized" to isInitialized,
+                "readerConnected" to (isConnectedFlag && reader?.isConnected == true),
+                "readerName" to connectedReaderName,
+                "isReconnecting" to isReconnecting,
+                "maxPower" to maxPower
+            ))
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -620,27 +650,26 @@ class RFIDHandler(
     // ═══════════════════════════════════════════════════════════════════
 
     fun dispose() {
-        status.append("\n[DISPOSE] Disposing RFIDHandler...")
+        log("DISPOSE", "Disposing RFIDHandler...")
+        stopAutoReconnect()
 
         try {
-            disconnectReader(object : ResultCallback {
-                override fun onSuccess(data: Any?) {
-                    status.append("\n[DISPOSE] Disconnected before dispose")
-                }
-                override fun onError(errorCode: String, errorMessage: String, errorDetails: Any?) {
-                    status.append("\n[DISPOSE] Disconnect error: $errorMessage")
-                }
-            })
+            if (reader?.isConnected == true) {
+                eventHandler?.let { reader!!.Events.removeEventsListener(it) }
+                reader!!.disconnect()
+            }
 
             readers?.Dispose()
             readers = null
             reader = null
             isInitialized = false
+            isConnectedFlag = false
+            connectedReaderName = null
 
-            status.append("\n[DISPOSE] Disposed successfully")
+            log("DISPOSE", "Disposed successfully")
 
         } catch (e: Exception) {
-            status.append("\n[DISPOSE ERROR] Exception: ${e.message}")
+            log("DISPOSE", "Error: ${e.message}")
         }
     }
 
@@ -648,130 +677,117 @@ class RFIDHandler(
     // PRIVATE HELPER METHODS
     // ═══════════════════════════════════════════════════════════════════
 
+    private fun log(tag: String, message: String) {
+        android.util.Log.d("RFIDHandler", "[$tag] $message")
+    }
+
     private fun configureReader() {
-        status.append("\n[CONFIG] Configuring reader: ${reader?.getHostName()}")
+        log("CONFIG", "Configuring reader: ${reader?.hostName}")
 
         try {
             reader?.let { rfidReader ->
+                // Setup event listener
                 if (eventHandler == null) {
                     eventHandler = EventHandler()
                 }
-                rfidReader.Events.addEventsListener(eventHandler)
-                status.append("\n[CONFIG] Event listener added")
+                
+                try {
+                    rfidReader.Events.addEventsListener(eventHandler)
+                    log("CONFIG", "Event listener added")
+                } catch (e: Exception) {
+                    log("CONFIG", "Warning: Could not add event listener: ${e.message}")
+                }
 
-                rfidReader.Events.setHandheldEvent(true)
-                rfidReader.Events.setTagReadEvent(true)
-                rfidReader.Events.setAttachTagDataWithReadEvent(false)
-                rfidReader.Events.setReaderDisconnectEvent(true)
-                status.append("\n[CONFIG] Events enabled")
+                // Configure events
+                try {
+                    rfidReader.Events.setHandheldEvent(true)
+                    rfidReader.Events.setTagReadEvent(true)
+                    rfidReader.Events.setAttachTagDataWithReadEvent(false)
+                    rfidReader.Events.setReaderDisconnectEvent(true)
+                    log("CONFIG", "Events configured")
+                } catch (e: Exception) {
+                    log("CONFIG", "Warning: Could not configure events: ${e.message}")
+                }
 
-                rfidReader.Config.setTriggerMode(ENUM_TRIGGER_MODE.RFID_MODE, true)
-                status.append("\n[CONFIG] Trigger mode set to RFID_MODE")
+                // Set trigger mode
+                try {
+                    rfidReader.Config.setTriggerMode(ENUM_TRIGGER_MODE.RFID_MODE, true)
+                    log("CONFIG", "Trigger mode set")
+                } catch (e: Exception) {
+                    log("CONFIG", "Warning: Could not set trigger mode: ${e.message}")
+                }
 
-                val triggerInfo = TriggerInfo()
-                triggerInfo.StartTrigger.setTriggerType(START_TRIGGER_TYPE.START_TRIGGER_TYPE_IMMEDIATE)
-                triggerInfo.StopTrigger.setTriggerType(STOP_TRIGGER_TYPE.STOP_TRIGGER_TYPE_DURATION)
-                triggerInfo.StopTrigger.setDurationMilliSeconds(0)
-                rfidReader.Config.setStartTrigger(triggerInfo.StartTrigger)
-                rfidReader.Config.setStopTrigger(triggerInfo.StopTrigger)
-                status.append("\n[CONFIG] Triggers configured (continuous)")
+                // Configure triggers
+                try {
+                    val triggerInfo = TriggerInfo()
+                    triggerInfo.StartTrigger.setTriggerType(START_TRIGGER_TYPE.START_TRIGGER_TYPE_IMMEDIATE)
+                    triggerInfo.StopTrigger.setTriggerType(STOP_TRIGGER_TYPE.STOP_TRIGGER_TYPE_IMMEDIATE)
+                    rfidReader.Config.setStartTrigger(triggerInfo.StartTrigger)
+                    rfidReader.Config.setStopTrigger(triggerInfo.StopTrigger)
+                    log("CONFIG", "Triggers configured")
+                } catch (e: Exception) {
+                    log("CONFIG", "Warning: Could not configure triggers: ${e.message}")
+                }
 
-                val powerLevels = rfidReader.ReaderCapabilities.getTransmitPowerLevelValues()
-                maxPower = powerLevels.size - 1
-                status.append("\n[CONFIG] Max power: $maxPower")
+                // Get max power
+                try {
+                    val powerLevels = rfidReader.ReaderCapabilities.getTransmitPowerLevelValues()
+                    maxPower = powerLevels.size - 1
+                    log("CONFIG", "Max power: $maxPower")
+                } catch (e: Exception) {
+                    log("CONFIG", "Warning: Could not get power levels: ${e.message}")
+                    maxPower = 270
+                }
 
-                val config = rfidReader.Config.Antennas.getAntennaRfConfig(1)
-                config.setTransmitPowerIndex(maxPower)
-                config.setrfModeTableIndex(0)
-                config.setTari(0)
-                rfidReader.Config.Antennas.setAntennaRfConfig(1, config)
-                status.append("\n[CONFIG] Antenna configured with max power")
+                // Configure antenna
+                try {
+                    val config = rfidReader.Config.Antennas.getAntennaRfConfig(1)
+                    config.setTransmitPowerIndex(maxPower)
+                    config.setrfModeTableIndex(0)
+                    config.setTari(0)
+                    rfidReader.Config.Antennas.setAntennaRfConfig(1, config)
+                    log("CONFIG", "Antenna configured with power: $maxPower")
+                } catch (e: Exception) {
+                    log("CONFIG", "Warning: Could not configure antenna: ${e.message}")
+                }
 
-                val singulationControl = rfidReader.Config.Antennas.getSingulationControl(1)
-                singulationControl.setSession(SESSION.SESSION_S0)
-                singulationControl.Action.setInventoryState(INVENTORY_STATE.INVENTORY_STATE_A)
-                singulationControl.Action.setSLFlag(SL_FLAG.SL_ALL)
-                rfidReader.Config.Antennas.setSingulationControl(1, singulationControl)
-                status.append("\n[CONFIG] Singulation set to SESSION_S0")
+                // Configure singulation
+                try {
+                    val singulationControl = rfidReader.Config.Antennas.getSingulationControl(1)
+                    singulationControl.setSession(SESSION.SESSION_S0)
+                    singulationControl.Action.setInventoryState(INVENTORY_STATE.INVENTORY_STATE_A)
+                    singulationControl.Action.setSLFlag(SL_FLAG.SL_ALL)
+                    rfidReader.Config.Antennas.setSingulationControl(1, singulationControl)
+                    log("CONFIG", "Singulation configured")
+                } catch (e: Exception) {
+                    log("CONFIG", "Warning: Could not configure singulation: ${e.message}")
+                }
 
-                rfidReader.Actions.PreFilters.deleteAll()
-                status.append("\n[CONFIG] Prefilters cleared")
+                // Clear prefilters
+                try {
+                    rfidReader.Actions.PreFilters.deleteAll()
+                    log("CONFIG", "Prefilters cleared")
+                } catch (e: Exception) {
+                    log("CONFIG", "Warning: Could not clear prefilters: ${e.message}")
+                }
 
-                status.append("\n[CONFIG] Reader configured successfully")
+                log("CONFIG", "Reader configuration completed")
             }
         } catch (e: Exception) {
-            status.append("\n[CONFIG ERROR] Exception: ${e.message}")
-            sendStatusEvent("error", "Configuration error: ${e.message}")
+            log("CONFIG", "Configuration error: ${e.message}")
+            // Don't throw - let connection continue even if config partially fails
         }
     }
 
-    private fun getAvailableReaders() {
-        status.append("\n[GET_AVAIL] Getting available readers...")
-
+    private fun refreshAvailableReaders() {
         try {
             readers?.let { rfidReaders ->
                 Readers.attach(this)
-
                 availableRFIDReaderList = rfidReaders.GetAvailableRFIDReaderList()
-                val count = availableRFIDReaderList?.size ?: 0
-                status.append("\n[GET_AVAIL] Found $count reader(s)")
-
-                if (count > 0) {
-                    availableRFIDReaderList!!.forEachIndexed { index, device ->
-                        status.append("\n[GET_AVAIL] Reader $index: ${device.getName()}")
-                    }
-                } else {
-                    status.append("\n[GET_AVAIL] No readers detected")
-                }
+                log("REFRESH", "Found ${availableRFIDReaderList?.size ?: 0} reader(s)")
             }
         } catch (e: Exception) {
-            status.append("\n[GET_AVAIL ERROR] Exception: ${e.message}")
-        }
-    }
-
-    private fun connectToReader(): String {
-        status.append("\n[CONN_TO] Connecting to reader...")
-
-        return try {
-            reader?.let { rfidReader ->
-                if (!rfidReader.isConnected) {
-                    val hostname = rfidReader.getHostName()
-                    status.append("\n[CONN_TO] Connecting to $hostname...")
-
-                    rfidReader.connect()
-                    status.append("\n[CONN_TO] connect() called")
-
-                    configureReader()
-
-                    if (rfidReader.isConnected) {
-                        val msg = "Connected to $hostname"
-                        status.append("\n[CONN_TO] SUCCESS: $msg")
-                        sendStatusEvent("connected", msg, mapOf("readerName" to hostname))
-                        msg
-                    } else {
-                        val msg = "Connection failed (not connected after connect())"
-                        status.append("\n[CONN_TO ERROR] $msg")
-                        msg
-                    }
-                } else {
-                    val msg = "Already connected"
-                    status.append("\n[CONN_TO] $msg")
-                    msg
-                }
-            } ?: run {
-                val msg = "No reader available"
-                status.append("\n[CONN_TO ERROR] $msg")
-                msg
-            }
-        } catch (e: InvalidUsageException) {
-            status.append("\n[CONN_TO ERROR] InvalidUsageException: ${e.message}")
-            "InvalidUsageException: ${e.message}"
-        } catch (e: OperationFailureException) {
-            status.append("\n[CONN_TO ERROR] OperationFailureException: ${e.vendorMessage}")
-            "OperationFailureException: ${e.vendorMessage}"
-        } catch (e: Exception) {
-            status.append("\n[CONN_TO ERROR] Exception: ${e.message}")
-            "Exception: ${e.message}"
+            log("REFRESH", "Error: ${e.message}")
         }
     }
 
@@ -780,27 +796,25 @@ class RFIDHandler(
             try {
                 tagReadEventSink.sendEvent(mapOf(
                     "type" to "tagRead",
-                    "tags" to tags,
-                    "status" to status.toString()
+                    "tags" to tags
                 ))
             } catch (e: Exception) {
-                status.append("\n[EVENT ERROR] Failed to send tag event: ${e.message}")
+                log("EVENT", "Failed to send tag event: ${e.message}")
             }
         }
     }
 
-    private fun sendStatusEvent(type: String, message: String, data: Map<String, Any>? = null) {
+    private fun sendStatusEvent(type: String, message: String, data: Map<String, Any?>? = null) {
         mainHandler.post {
             try {
                 val event = mutableMapOf<String, Any?>(
                     "type" to type,
-                    "message" to message,
-                    "status" to status.toString()
+                    "message" to message
                 )
                 data?.let { event.putAll(it) }
                 statusEventSink.sendEvent(event)
             } catch (e: Exception) {
-                status.append("\n[EVENT ERROR] Failed to send status event: ${e.message}")
+                log("EVENT", "Failed to send status event: ${e.message}")
             }
         }
     }
@@ -811,13 +825,13 @@ class RFIDHandler(
 
     override fun RFIDReaderAppeared(readerDevice: ReaderDevice?) {
         val name = readerDevice?.getName() ?: "Unknown"
-        status.append("\n[READER_EVENT] Reader appeared: $name")
+        log("READER_EVENT", "Reader appeared: $name")
         sendStatusEvent("readerAppeared", "Reader appeared: $name", mapOf("readerName" to name))
     }
 
     override fun RFIDReaderDisappeared(readerDevice: ReaderDevice?) {
         val name = readerDevice?.getName() ?: "Unknown"
-        status.append("\n[READER_EVENT] Reader disappeared: $name")
+        log("READER_EVENT", "Reader disappeared: $name")
         sendStatusEvent("readerDisappeared", "Reader disappeared: $name", mapOf("readerName" to name))
     }
 
@@ -837,19 +851,19 @@ class RFIDHandler(
 
                         for (tag in it) {
                             tagList.add(mapOf(
-                                "tagId" to tag.getTagID(),
+                                "tagId" to (tag.getTagID() ?: ""),
                                 "rssi" to tag.getPeakRSSI(),
                                 "antennaId" to tag.getAntennaID(),
                                 "count" to tag.getTagSeenCount()
                             ))
                         }
 
-                        status.append("\n[TAG_READ] Read ${it.size} tags")
+                        log("TAG_READ", "Read ${it.size} tags")
                         sendTagReadEvent(tagList)
                     }
                 }
             } catch (e: Exception) {
-                status.append("\n[TAG_READ ERROR] Exception: ${e.message}")
+                log("TAG_READ", "Error: ${e.message}")
             }
         }
 
@@ -861,7 +875,7 @@ class RFIDHandler(
                             val pressed = event.StatusEventData.HandheldTriggerEventData
                                 .getHandheldEvent() == HANDHELD_TRIGGER_EVENT_TYPE.HANDHELD_TRIGGER_PRESSED
 
-                            status.append("\n[TRIGGER] ${if (pressed) "PRESSED" else "RELEASED"}")
+                            log("TRIGGER", if (pressed) "PRESSED" else "RELEASED")
                             sendStatusEvent(
                                 "trigger",
                                 if (pressed) "Trigger pressed" else "Trigger released",
@@ -869,22 +883,26 @@ class RFIDHandler(
                             )
                         }
                         STATUS_EVENT_TYPE.DISCONNECTION_EVENT -> {
-                            status.append("\n[STATUS] Unexpected disconnection")
+                            log("STATUS", "Unexpected disconnection detected")
+                            isConnectedFlag = false
                             sendStatusEvent("disconnected", "Reader disconnected unexpectedly")
+                            
+                            // Start auto-reconnect
+                            startAutoReconnect()
                         }
                         else -> {
-                            status.append("\n[STATUS] Event: ${event.StatusEventData.getStatusEventType()}")
+                            log("STATUS", "Event: ${event.StatusEventData.getStatusEventType()}")
                         }
                     }
                 }
             } catch (e: Exception) {
-                status.append("\n[STATUS_EVENT ERROR] Exception: ${e.message}")
+                log("STATUS_EVENT", "Error: ${e.message}")
             }
         }
     }
 }
 
-// Android 13+ Context Wrapper to fix SDK crash
+// Android 13+ Context Wrapper
 class Android13ContextWrapper(base: Context) : ContextWrapper(base) {
     override fun registerReceiver(receiver: BroadcastReceiver?, filter: IntentFilter?): Intent? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
